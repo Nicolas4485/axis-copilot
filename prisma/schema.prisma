@@ -7,12 +7,438 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  CONSULTANT
+}
+
+enum SessionStatus {
+  ACTIVE
+  ARCHIVED
+  EXPORTED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum StakeholderInfluence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum StakeholderInterest {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RelationshipType {
+  REPORTS_TO
+  COLLABORATES
+  INFLUENCES
+  BLOCKS
+}
+
+enum AnalysisType {
+  PRODUCT_CRITIQUE
+  PROCESS_ANALYSIS
+  COMPETITIVE
+  STAKEHOLDER_MAP
+}
+
+enum SourceType {
+  GDRIVE
+  UPLOAD
+  WEB
+  MANUAL
+}
+
+enum SyncStatus {
+  PENDING
+  PROCESSING
+  INDEXED
+  FAILED
+  CONFLICT
+}
+
+enum ConflictStatus {
+  UNRESOLVED
+  RESOLVED_A
+  RESOLVED_B
+  CUSTOM
+}
+
+enum MemoryType {
+  EPISODIC
+  SEMANTIC
+  PROCEDURAL
+}
+
+enum IntegrationProvider {
+  GOOGLE_DOCS
+  GOOGLE_SHEETS
+  GMAIL
+  GOOGLE_DRIVE
+}
+
+enum ExportDestination {
+  GDOC
+  GSHEET
+  EMAIL
+  MARKDOWN
+  JSON
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  role      UserRole @default(CONSULTANT)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
+  sessions        Session[]
+  clients         Client[]
+  knowledgeDocs   KnowledgeDocument[]
+  agentMemories   AgentMemory[]
+  integrations    Integration[]
+  conflictRecords ConflictRecord[]
+  costRecords     CostRecord[]
+
+  @@index([createdAt])
   @@map("users")
+}
+
+model Client {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  name        String
+  industry    String?
+  companySize Int?     @map("company_size")
+  website     String?
+  notes       String?
+  techStack   Json?    @map("tech_stack")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user            User                @relation(fields: [userId], references: [id])
+  sessions        Session[]
+  clientContexts  ClientContext[]
+  stakeholders    Stakeholder[]
+  analyses        Analysis[]
+  knowledgeDocs   KnowledgeDocument[]
+  agentMemories   AgentMemory[]
+  conflictRecords ConflictRecord[]
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("clients")
+}
+
+model Session {
+  id        String        @id @default(cuid())
+  userId    String        @map("user_id")
+  clientId  String?       @map("client_id")
+  title     String?
+  mode      String?
+  status    SessionStatus @default(ACTIVE)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  user           User            @relation(fields: [userId], references: [id])
+  client         Client?         @relation(fields: [clientId], references: [id])
+  messages       Message[]
+  clientContexts ClientContext[]
+  analyses       Analysis[]
+  exportRecords  ExportRecord[]
+  costRecords    CostRecord[]
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("sessions")
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  sessionId String      @map("session_id")
+  role      MessageRole
+  content   String
+  mode      String?
+  metadata  Json        @default("{}")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model ClientContext {
+  id           String   @id @default(cuid())
+  clientId     String   @map("client_id")
+  sessionId    String   @map("session_id")
+  summary      String?
+  painPoints   Json     @default("[]") @map("pain_points")
+  goals        Json     @default("[]")
+  budgetSignal String?  @map("budget_signal")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  client  Client  @relation(fields: [clientId], references: [id])
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([clientId])
+  @@index([sessionId])
+  @@map("client_contexts")
+}
+
+model Stakeholder {
+  id          String               @id @default(cuid())
+  clientId    String               @map("client_id")
+  name        String
+  role        String?
+  email       String?
+  phone       String?
+  influence   StakeholderInfluence @default(MEDIUM)
+  interest    StakeholderInterest  @default(MEDIUM)
+  department  String?
+  reportsToId String?              @map("reports_to_id")
+  notes       String?
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+
+  client    Client       @relation(fields: [clientId], references: [id])
+  reportsTo Stakeholder? @relation("StakeholderHierarchy", fields: [reportsToId], references: [id])
+  reports   Stakeholder[] @relation("StakeholderHierarchy")
+
+  relationsFrom StakeholderRelation[] @relation("RelationFrom")
+  relationsTo   StakeholderRelation[] @relation("RelationTo")
+
+  @@index([clientId])
+  @@map("stakeholders")
+}
+
+model StakeholderRelation {
+  id               String           @id @default(cuid())
+  fromId           String           @map("from_id")
+  toId             String           @map("to_id")
+  relationshipType RelationshipType @map("relationship_type")
+
+  from Stakeholder @relation("RelationFrom", fields: [fromId], references: [id])
+  to   Stakeholder @relation("RelationTo", fields: [toId], references: [id])
+
+  @@unique([fromId, toId, relationshipType])
+  @@index([fromId])
+  @@index([toId])
+  @@map("stakeholder_relations")
+}
+
+model Analysis {
+  id        String       @id @default(cuid())
+  sessionId String       @map("session_id")
+  clientId  String       @map("client_id")
+  type      AnalysisType
+  content   Json         @default("{}")
+  summary   String?
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  session           Session           @relation(fields: [sessionId], references: [id])
+  client            Client            @relation(fields: [clientId], references: [id])
+  competitorEntries CompetitorEntry[]
+  processSteps      ProcessStep[]
+
+  @@index([sessionId])
+  @@index([clientId])
+  @@index([createdAt])
+  @@map("analyses")
+}
+
+model CompetitorEntry {
+  id          String  @id @default(cuid())
+  analysisId  String  @map("analysis_id")
+  name        String
+  website     String?
+  strengths   Json    @default("[]")
+  weaknesses  Json    @default("[]")
+  features    Json    @default("[]")
+  positioning String?
+
+  analysis Analysis @relation(fields: [analysisId], references: [id])
+
+  @@index([analysisId])
+  @@map("competitor_entries")
+}
+
+model ProcessStep {
+  id                    String  @id @default(cuid())
+  analysisId            String  @map("analysis_id")
+  stepName              String  @map("step_name")
+  automationScore       Int     @map("automation_score")
+  agentType             String? @map("agent_type")
+  humanCheckpoint       Boolean @default(false) @map("human_checkpoint")
+  humanCheckpointReason String? @map("human_checkpoint_reason")
+  order                 Int
+
+  analysis Analysis @relation(fields: [analysisId], references: [id])
+
+  @@index([analysisId])
+  @@map("process_steps")
+}
+
+model KnowledgeDocument {
+  id                String     @id @default(cuid())
+  userId            String     @map("user_id")
+  clientId          String?    @map("client_id")
+  title             String
+  sourceType        SourceType @map("source_type")
+  sourcePath        String?    @map("source_path")
+  sourceId          String?    @map("source_id")
+  mimeType          String?    @map("mime_type")
+  docType           String?    @map("doc_type")
+  checksum          String?
+  lastSynced        DateTime?  @map("last_synced")
+  syncStatus        SyncStatus @default(PENDING) @map("sync_status")
+  conflictNotes     String?    @map("conflict_notes")
+  chunkCount        Int        @default(0) @map("chunk_count")
+  entityCount       Int        @default(0) @map("entity_count")
+  attributionMethod String?    @map("attribution_method")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+  chunks DocumentChunk[]
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([syncStatus])
+  @@index([createdAt])
+  @@map("knowledge_documents")
+}
+
+model DocumentChunk {
+  id         String   @id @default(cuid())
+  documentId String   @map("document_id")
+  content    String
+  chunkIndex Int      @map("chunk_index")
+  tokens     Int      @default(0)
+  metadata   Json     @default("{}")
+  /// pgvector: populated by ingestion pipeline — do not write from application code
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([createdAt])
+  @@map("document_chunks")
+}
+
+model ConflictRecord {
+  id         String         @id @default(cuid())
+  userId     String         @map("user_id")
+  clientId   String?        @map("client_id")
+  entityName String         @map("entity_name")
+  entityType String         @map("entity_type")
+  property   String
+  valueA     String         @map("value_a")
+  valueB     String         @map("value_b")
+  sourceDocA String         @map("source_doc_a")
+  sourceDocB String         @map("source_doc_b")
+  status     ConflictStatus @default(UNRESOLVED)
+  resolution String?
+  resolvedAt DateTime?      @map("resolved_at")
+  resolvedBy String?        @map("resolved_by")
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  user   User    @relation(fields: [userId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("conflict_records")
+}
+
+model AgentMemory {
+  id         String     @id @default(cuid())
+  userId     String     @map("user_id")
+  clientId   String?    @map("client_id")
+  memoryType MemoryType @map("memory_type")
+  content    String
+  tags       Json       @default("[]")
+  /// pgvector: populated by memory manager — do not write from application code
+  embedding  Unsupported("vector(1536)")?
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  user   User    @relation(fields: [userId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([createdAt])
+  @@map("agent_memories")
+}
+
+model Integration {
+  id           String              @id @default(cuid())
+  userId       String              @map("user_id")
+  provider     IntegrationProvider
+  accessToken  String              @map("access_token")
+  refreshToken String?             @map("refresh_token")
+  expiresAt    DateTime?           @map("expires_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("integrations")
+}
+
+model ExportRecord {
+  id          String            @id @default(cuid())
+  sessionId   String            @map("session_id")
+  destination ExportDestination
+  externalId  String?           @map("external_id")
+  externalUrl String?           @map("external_url")
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@map("export_records")
+}
+
+model CostRecord {
+  id           String   @id @default(cuid())
+  sessionId    String   @map("session_id")
+  userId       String   @map("user_id")
+  task         String
+  model        String
+  inputTokens  Int      @map("input_tokens")
+  outputTokens Int      @map("output_tokens")
+  cacheHit     Boolean  @default(false) @map("cache_hit")
+  costUsd      Float    @map("cost_usd")
+  latencyMs    Int      @map("latency_ms")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([sessionId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("cost_records")
 }
