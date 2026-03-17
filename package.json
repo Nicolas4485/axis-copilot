@@ -1,0 +1,27 @@
+{
+  "name": "axis-copilot",
+  "version": "0.0.1",
+  "private": true,
+  "packageManager": "pnpm@latest",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "db:migrate": "pnpm --filter @axis/api prisma migrate deploy",
+    "db:seed": "pnpm --filter @axis/api prisma db seed",
+    "local-models": "ollama pull qwen3:8b && ollama serve"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
