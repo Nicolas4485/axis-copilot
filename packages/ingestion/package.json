@@ -9,9 +9,14 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@axis/types": "workspace:*"
+    "@axis/inference": "workspace:*",
+    "@axis/types": "workspace:*",
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pdf-parse": "^1.1.4",
     "typescript": "^5.4.0"
   }
 }
