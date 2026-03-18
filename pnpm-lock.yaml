@@ -194,20 +194,38 @@ importers:
 
   packages/memory:
     dependencies:
+      '@axis/inference':
+        specifier: workspace:*
+        version: link:../inference
+      '@axis/knowledge-graph':
+        specifier: workspace:*
+        version: link:../knowledge-graph
       '@axis/types':
         specifier: workspace:*
         version: link:../types
     devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
 
   packages/rag:
     dependencies:
+      '@axis/inference':
+        specifier: workspace:*
+        version: link:../inference
+      '@axis/knowledge-graph':
+        specifier: workspace:*
+        version: link:../knowledge-graph
       '@axis/types':
         specifier: workspace:*
         version: link:../types
     devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
