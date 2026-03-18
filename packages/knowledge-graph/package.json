@@ -9,9 +9,11 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@axis/types": "workspace:*"
+    "@axis/types": "workspace:*",
+    "neo4j-driver": "^5.21.0"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.4.0"
   }
 }

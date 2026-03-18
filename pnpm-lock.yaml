@@ -157,7 +157,13 @@ importers:
       '@axis/types':
         specifier: workspace:*
         version: link:../types
+      neo4j-driver:
+        specifier: ^5.21.0
+        version: 5.28.3
     devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
