@@ -3,6 +3,7 @@
 
 import { InferenceEngine } from '@axis/inference'
 import type { InferenceContentBlock, InferenceMessage } from '@axis/inference'
+import { InfiniteMemory } from '@axis/memory'
 import { ToolRegistry } from './tool-registry.js'
 import type {
   AgentConfig,
@@ -20,11 +21,13 @@ export class BaseAgent {
   protected config: AgentConfig
   protected engine: InferenceEngine
   protected toolRegistry: ToolRegistry
+  protected memory: InfiniteMemory
 
-  constructor(config: AgentConfig, engine: InferenceEngine) {
+  constructor(config: AgentConfig, engine: InferenceEngine, memory?: InfiniteMemory) {
     this.config = config
     this.engine = engine
     this.toolRegistry = new ToolRegistry()
+    this.memory = memory ?? new InfiniteMemory({ engine })
   }
 
   /**
@@ -40,7 +43,7 @@ export class BaseAgent {
     const toolsUsed: string[] = []
     const memoryUpdates: MemoryUpdate[] = []
     const citations: Citation[] = this.extractCitations(context)
-    const conflictsFound: ConflictFound[] = context.ragResult?.conflicts ?? []
+    const conflictsFound: ConflictFound[] = this.extractConflicts(context)
 
     // Build the user turn with assembled context and RAG context
     const userContent = this.buildUserContent(userMessage, context)
@@ -68,6 +71,8 @@ export class BaseAgent {
         systemPromptKey: this.config.systemPromptKey,
         messages,
         tools: toolDefinitions,
+        sessionId: context.sessionId,
+        userId: context.userId,
       })
 
       // Collect text blocks and tool_use blocks from response
@@ -92,7 +97,7 @@ export class BaseAgent {
       }
 
       // Execute each tool and collect results
-      const toolResultBlocks: InferenceContentBlock[] = []
+      const toolResultContent: InferenceContentBlock[] = []
 
       for (const toolUse of toolUseBlocks) {
         toolsUsed.push(toolUse.name)
@@ -110,29 +115,14 @@ export class BaseAgent {
           toolContext
         )
 
-        toolResultBlocks.push({
-          type: 'tool_use',
-          id: toolUse.id,
-          name: toolUse.name,
-          input: result.success
-            ? (result.data as Record<string, unknown>) ?? {}
-            : { error: result.error },
-        })
-      }
-
-      // Feed tool results back as a user message with tool_result blocks
-      // (InferenceEngine will format this appropriately for the model)
-      const toolResultContent: InferenceContentBlock[] = toolUseBlocks.map((toolUse) => {
-        const result = toolResultBlocks.find(
-          (b) => b.type === 'tool_use' && b.id === toolUse.id
-        )
-        return {
+        // Feed tool result back as text (InferenceEngine formats for model)
+        toolResultContent.push({
           type: 'text' as const,
           text: `[Tool result for ${toolUse.name}]: ${JSON.stringify(
-            result?.type === 'tool_use' ? result.input : { error: 'tool not found' }
+            result.success ? result.data : { error: result.error }
           )}`,
-        }
-      })
+        })
+      }
 
       messages.push({ role: 'user', content: toolResultContent })
 
@@ -151,14 +141,8 @@ export class BaseAgent {
       content = conflictWarning + '\n\n' + content
     }
 
-    // TODO: Store message in PostgreSQL via Prisma
-    // await this.storeMessage(context.sessionId, 'ASSISTANT', content, { toolsUsed, citations })
-
-    // TODO: Update working memory in Redis
-    // await this.updateWorkingMemory(context, content)
-
-    // TODO: If messageCount % 5 === 0, trigger async session summary
-    // this.maybeUpdateSummary(context.sessionId)
+    // Store message in working memory
+    await this.memory.addToWorkingMemory(context.sessionId, 'ASSISTANT', content)
 
     return {
       content,
@@ -170,24 +154,18 @@ export class BaseAgent {
     }
   }
 
-  /** Build the user content with assembled context and RAG blocks */
+  /** Build the user content with assembled context and RAG context */
   private buildUserContent(userMessage: string, context: AgentContext): string {
     const parts: string[] = []
 
-    // Assembled context (memory, client info, session history)
+    // Assembled context from InfiniteMemory (memory, client info, session history)
     if (context.assembledContext) {
       parts.push(`<CONTEXT>\n${context.assembledContext}\n</CONTEXT>`)
     }
 
-    // RAG knowledge context
-    if (context.ragResult && context.ragResult.chunks.length > 0) {
-      const knowledgeBlock = context.ragResult.chunks
-        .map(
-          (chunk, i) =>
-            `[Source ${i + 1}: ${chunk.sourceTitle} (score: ${chunk.score.toFixed(2)})]\n${chunk.content}`
-        )
-        .join('\n\n')
-      parts.push(`<KNOWLEDGE_CONTEXT>\n${knowledgeBlock}\n</KNOWLEDGE_CONTEXT>`)
+    // RAG knowledge context — already formatted by ContextCompressor
+    if (context.ragResult && context.ragResult.context) {
+      parts.push(context.ragResult.context)
     }
 
     // Client record if available
@@ -214,12 +192,25 @@ export class BaseAgent {
   /** Extract citations from RAG result */
   private extractCitations(context: AgentContext): Citation[] {
     if (!context.ragResult) return []
-    return context.ragResult.chunks.map((chunk) => ({
-      documentId: chunk.documentId,
-      chunkId: chunk.chunkId,
-      content: chunk.content.slice(0, 200),
-      relevanceScore: chunk.score,
-      sourceTitle: chunk.sourceTitle,
+    return context.ragResult.citations.map((c) => ({
+      documentId: c.documentId,
+      chunkId: c.chunkId,
+      content: c.content,
+      relevanceScore: c.relevanceScore,
+      sourceTitle: c.sourceTitle,
+    }))
+  }
+
+  /** Extract conflicts from RAG result */
+  private extractConflicts(context: AgentContext): ConflictFound[] {
+    if (!context.ragResult) return []
+    return context.ragResult.conflicts.map((c) => ({
+      entityName: c.entityName,
+      property: c.property,
+      valueA: c.valueA,
+      valueB: c.valueB,
+      sourceA: c.sourceA,
+      sourceB: c.sourceB,
     }))
   }
 
@@ -227,7 +218,7 @@ export class BaseAgent {
   private buildConflictWarning(conflicts: ConflictFound[]): string {
     const lines = conflicts.map(
       (c) =>
-        `- ${c.entityName}.${c.property}: "${c.valueA}" (${c.sourceDocA}) vs "${c.valueB}" (${c.sourceDocB})`
+        `- ${c.entityName}.${c.property}: "${c.valueA}" (${c.sourceA}) vs "${c.valueB}" (${c.sourceB})`
     )
     return `⚠️ CONFLICTING INFORMATION DETECTED:\n${lines.join('\n')}\nPlease verify before relying on this data.`
   }

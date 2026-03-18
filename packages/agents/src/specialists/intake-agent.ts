@@ -4,6 +4,7 @@
 // Identifies what client SAYS they need vs what they ACTUALLY need
 
 import { InferenceEngine } from '@axis/inference'
+import type { InfiniteMemory } from '@axis/memory'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -22,7 +23,7 @@ const INTAKE_CONFIG: AgentConfig = {
 }
 
 export class IntakeAgent extends BaseAgent {
-  constructor(engine: InferenceEngine) {
-    super(INTAKE_CONFIG, engine)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
+    super(INTAKE_CONFIG, engine, memory)
   }
 }

@@ -4,6 +4,7 @@
 // Outputs ProcessStep records for every identified step
 
 import { InferenceEngine } from '@axis/inference'
+import type { InfiniteMemory } from '@axis/memory'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -24,7 +25,7 @@ const PROCESS_CONFIG: AgentConfig = {
 }
 
 export class ProcessAgent extends BaseAgent {
-  constructor(engine: InferenceEngine) {
-    super(PROCESS_CONFIG, engine)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
+    super(PROCESS_CONFIG, engine, memory)
   }
 }

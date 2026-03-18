@@ -4,6 +4,7 @@
 // ALWAYS suggests communication approach per stakeholder
 
 import { InferenceEngine } from '@axis/inference'
+import type { InfiniteMemory } from '@axis/memory'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -25,7 +26,7 @@ const STAKEHOLDER_CONFIG: AgentConfig = {
 }
 
 export class StakeholderAgent extends BaseAgent {
-  constructor(engine: InferenceEngine) {
-    super(STAKEHOLDER_CONFIG, engine)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
+    super(STAKEHOLDER_CONFIG, engine, memory)
   }
 }

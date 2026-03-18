@@ -4,6 +4,7 @@
 // Always compares to at least one known competitor
 
 import { InferenceEngine } from '@axis/inference'
+import type { InfiniteMemory } from '@axis/memory'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -23,7 +24,7 @@ const PRODUCT_CONFIG: AgentConfig = {
 }
 
 export class ProductAgent extends BaseAgent {
-  constructor(engine: InferenceEngine) {
-    super(PRODUCT_CONFIG, engine)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
+    super(PRODUCT_CONFIG, engine, memory)
   }
 }

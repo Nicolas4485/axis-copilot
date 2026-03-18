@@ -130,6 +130,12 @@ importers:
       '@axis/inference':
         specifier: workspace:*
         version: link:../inference
+      '@axis/memory':
+        specifier: workspace:*
+        version: link:../memory
+      '@axis/rag':
+        specifier: workspace:*
+        version: link:../rag
       '@axis/tools':
         specifier: workspace:*
         version: link:../tools

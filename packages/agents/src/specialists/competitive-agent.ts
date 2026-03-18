@@ -4,6 +4,7 @@
 // ALWAYS ends with specific positioning recommendation
 
 import { InferenceEngine } from '@axis/inference'
+import type { InfiniteMemory } from '@axis/memory'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -24,7 +25,7 @@ const COMPETITIVE_CONFIG: AgentConfig = {
 }
 
 export class CompetitiveAgent extends BaseAgent {
-  constructor(engine: InferenceEngine) {
-    super(COMPETITIVE_CONFIG, engine)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
+    super(COMPETITIVE_CONFIG, engine, memory)
   }
 }

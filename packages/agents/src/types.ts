@@ -1,5 +1,7 @@
 // Agent system type definitions
 
+import type { RAGResult as RealRAGResult, Citation as RAGCitation, RAGConflict } from '@axis/rag'
+
 /** Which system prompt to load for this agent */
 export type SystemPromptKey =
   | 'AGENT_INTAKE'
@@ -32,12 +34,11 @@ export interface Citation {
 /** A conflict detected between knowledge sources */
 export interface ConflictFound {
   entityName: string
-  entityType: string
   property: string
   valueA: string
   valueB: string
-  sourceDocA: string
-  sourceDocB: string
+  sourceA: string
+  sourceB: string
 }
 
 /** Memory update an agent wants to persist */
@@ -55,7 +56,7 @@ export interface AgentResponse {
   memoryUpdates: MemoryUpdate[]
   citations: Citation[]
   conflictsFound: ConflictFound[]
-  suggestedNextAgent?: SystemPromptKey
+  suggestedNextAgent?: SystemPromptKey | undefined
 }
 
 /** Stakeholder summary passed into agent context */
@@ -65,7 +66,7 @@ export interface StakeholderSummary {
   role: string
   influence: 'HIGH' | 'MEDIUM' | 'LOW'
   interest: 'HIGH' | 'MEDIUM' | 'LOW'
-  department?: string
+  department?: string | undefined
 }
 
 /** Client record summary passed into agent context */
@@ -74,29 +75,25 @@ export interface ClientRecord {
   name: string
   industry: string
   companySize: string
-  website?: string
+  website?: string | undefined
   techStack: unknown[]
-  notes?: string
+  notes?: string | undefined
 }
 
-/** RAG retrieval result */
-export interface RAGResult {
-  chunks: Array<{
-    chunkId: string
-    documentId: string
-    content: string
-    score: number
-    sourceTitle: string
-  }>
-  conflicts: ConflictFound[]
-}
+/** Re-export the real RAG result type from @axis/rag */
+export type RAGResult = RealRAGResult
+
+/** Re-export RAG citation and conflict types */
+export type { RAGCitation, RAGConflict }
 
 /** Full context assembled for an agent before it runs */
 export interface AgentContext {
   sessionId: string
   clientId: string | null
   userId: string
+  /** Assembled memory context from InfiniteMemory */
   assembledContext: string
+  /** RAG retrieval result from RAGEngine.query() */
   ragResult: RAGResult | null
   stakeholders: StakeholderSummary[]
   clientRecord: ClientRecord | null
@@ -131,7 +128,7 @@ export interface ToolResultBlock {
   type: 'tool_result'
   tool_use_id: string
   content: string
-  is_error?: boolean
+  is_error?: boolean | undefined
 }
 
 export interface ImageBlock {
@@ -147,7 +144,7 @@ export interface ImageBlock {
 export interface ToolResult {
   success: boolean
   data: unknown
-  error?: string
+  error?: string | undefined
   durationMs: number
 }
 

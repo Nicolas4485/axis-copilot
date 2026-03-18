@@ -2,6 +2,8 @@
 // and manages conversation state
 
 import { InferenceEngine } from '@axis/inference'
+import { RAGEngine } from '@axis/rag'
+import { InfiniteMemory } from '@axis/memory'
 import { IntakeAgent } from './specialists/intake-agent.js'
 import { ProductAgent } from './specialists/product-agent.js'
 import { ProcessAgent } from './specialists/process-agent.js'
@@ -13,24 +15,34 @@ import type { AgentContext, AgentResponse, SessionMode } from './types.js'
 /** Orchestrator routing and agent management */
 export class Orchestrator {
   private engine: InferenceEngine
+  private rag: RAGEngine
+  private memory: InfiniteMemory
   private agents: Record<SessionMode, BaseAgent>
 
-  constructor(engine?: InferenceEngine) {
-    this.engine = engine ?? new InferenceEngine()
+  constructor(options?: {
+    engine?: InferenceEngine | undefined
+    rag?: RAGEngine | undefined
+    memory?: InfiniteMemory | undefined
+  }) {
+    this.engine = options?.engine ?? new InferenceEngine()
+    this.rag = options?.rag ?? new RAGEngine({ engine: this.engine })
+    this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine })
+
     this.agents = {
-      intake: new IntakeAgent(this.engine),
-      product: new ProductAgent(this.engine),
-      process: new ProcessAgent(this.engine),
-      competitive: new CompetitiveAgent(this.engine),
-      stakeholder: new StakeholderAgent(this.engine),
+      intake: new IntakeAgent(this.engine, this.memory),
+      product: new ProductAgent(this.engine, this.memory),
+      process: new ProcessAgent(this.engine, this.memory),
+      competitive: new CompetitiveAgent(this.engine, this.memory),
+      stakeholder: new StakeholderAgent(this.engine, this.memory),
     }
   }
 
   /**
    * Handle an incoming message:
-   * 1. Build agent context (memory, RAG, client record)
-   * 2. Route to the correct agent
-   * 3. Return the agent's response
+   * 1. Build agent context via InfiniteMemory
+   * 2. Run RAG retrieval via RAGEngine
+   * 3. Route to the correct agent
+   * 4. Return the agent's response
    */
   async handleMessage(
     sessionId: string,
@@ -39,20 +51,32 @@ export class Orchestrator {
     mode?: SessionMode,
     imageBase64?: string
   ): Promise<AgentResponse> {
-    // TODO: Call InfiniteMemory.buildAgentContext(...)
-    // TODO: Call RAGEngine.query(message, userId, clientId)
-    // For now, build a minimal context
+    // Step 1: Store user message in working memory
+    await this.memory.addToWorkingMemory(sessionId, 'USER', message)
+
+    // Step 2: Build agent context from all 5 memory tiers
+    const assembled = await this.memory.buildAgentContext(
+      sessionId,
+      userId,
+      null,  // TODO: look up clientId from session
+      message
+    )
+
+    // Step 3: Run RAG retrieval
+    const ragResult = await this.rag.query(message, userId, null)
+
+    // Build the full agent context
     const context: AgentContext = {
       sessionId,
       clientId: null, // TODO: look up from session
       userId,
-      assembledContext: '',
-      ragResult: null,
+      assembledContext: assembled.text,
+      ragResult,
       stakeholders: [],
       clientRecord: null,
     }
 
-    // Route to the correct agent
+    // Step 4: Route to the correct agent
     const resolvedMode = await this.resolveMode(mode, message, context, imageBase64)
     const agent = this.agents[resolvedMode]
 
@@ -119,5 +143,15 @@ export class Orchestrator {
   /** Get the agent instance for a specific mode (for testing) */
   getAgent(mode: SessionMode): BaseAgent {
     return this.agents[mode]
+  }
+
+  /** Get the RAG engine (for testing) */
+  getRAG(): RAGEngine {
+    return this.rag
+  }
+
+  /** Get the memory system (for testing) */
+  getMemory(): InfiniteMemory {
+    return this.memory
   }
 }
