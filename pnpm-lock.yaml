@@ -118,6 +118,9 @@ importers:
       '@axis/inference':
         specifier: workspace:*
         version: link:../inference
+      '@axis/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@axis/types':
         specifier: workspace:*
         version: link:../types
@@ -191,6 +194,9 @@ importers:
 
   packages/types:
     devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
       typescript:
         specifier: ^5.4.0
         version: 5.9.3

@@ -1,2 +1,25 @@
-// All agent tools — placeholder
-export {}
+// All agent tools — exported from @axis/tools
+
+// Types
+export type { ToolContext, ToolResult, ToolDefinition, ToolFunction } from './types.js'
+
+// Tool implementations
+export { webSearch, webSearchDefinition } from './web-search.js'
+export { saveClientContext, saveClientContextDefinition } from './save-client-context.js'
+export { searchKnowledgeBase, searchKnowledgeBaseDefinition } from './search-knowledge-base.js'
+export { getGraphContext, getGraphContextDefinition } from './get-graph-context.js'
+export { updateClientRecord, updateClientRecordDefinition } from './update-client-record.js'
+export { saveAnalysis, saveAnalysisDefinition } from './save-analysis.js'
+export { getCompetitiveContext, getCompetitiveContextDefinition } from './get-competitive-context.js'
+export { saveProcessAnalysis, saveProcessAnalysisDefinition } from './save-process-analysis.js'
+export { createAutomationBlueprint, createAutomationBlueprintDefinition } from './create-automation-blueprint.js'
+export { saveCompetitor, saveCompetitorDefinition } from './save-competitor.js'
+export { getMarketContext, getMarketContextDefinition } from './get-market-context.js'
+export { generateComparisonMatrix, generateComparisonMatrixDefinition } from './generate-comparison-matrix.js'
+export { saveStakeholder, saveStakeholderDefinition } from './save-stakeholder.js'
+export { getOrgChart, getOrgChartDefinition } from './get-org-chart.js'
+export { draftEmail, draftEmailDefinition } from './draft-email.js'
+export { updateStakeholderInfluence, updateStakeholderInfluenceDefinition } from './update-stakeholder-influence.js'
+export { flagForReview, flagForReviewDefinition } from './flag-for-review.js'
+export { ingestDocument, ingestDocumentDefinition } from './ingest-document.js'
+export { analyzeImage, analyzeImageDefinition } from './analyze-image.js'

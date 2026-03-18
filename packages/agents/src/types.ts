@@ -1,0 +1,160 @@
+// Agent system type definitions
+
+/** Which system prompt to load for this agent */
+export type SystemPromptKey =
+  | 'AGENT_INTAKE'
+  | 'AGENT_PRODUCT'
+  | 'AGENT_PROCESS'
+  | 'AGENT_COMPETITIVE'
+  | 'AGENT_STAKEHOLDER'
+
+/** Memory types an agent can read/write */
+export type MemoryType = 'EPISODIC' | 'SEMANTIC' | 'PROCEDURAL'
+
+/** Configuration that defines an agent's identity and capabilities */
+export interface AgentConfig {
+  name: string
+  role: string
+  systemPromptKey: SystemPromptKey
+  tools: string[]
+  memoryTypes: MemoryType[]
+}
+
+/** Citation from a RAG result pointing back to source material */
+export interface Citation {
+  documentId: string
+  chunkId: string
+  content: string
+  relevanceScore: number
+  sourceTitle: string
+}
+
+/** A conflict detected between knowledge sources */
+export interface ConflictFound {
+  entityName: string
+  entityType: string
+  property: string
+  valueA: string
+  valueB: string
+  sourceDocA: string
+  sourceDocB: string
+}
+
+/** Memory update an agent wants to persist */
+export interface MemoryUpdate {
+  memoryType: MemoryType
+  content: string
+  tags: string[]
+}
+
+/** What an agent returns after processing a message */
+export interface AgentResponse {
+  content: string
+  reasoning: string
+  toolsUsed: string[]
+  memoryUpdates: MemoryUpdate[]
+  citations: Citation[]
+  conflictsFound: ConflictFound[]
+  suggestedNextAgent?: SystemPromptKey
+}
+
+/** Stakeholder summary passed into agent context */
+export interface StakeholderSummary {
+  id: string
+  name: string
+  role: string
+  influence: 'HIGH' | 'MEDIUM' | 'LOW'
+  interest: 'HIGH' | 'MEDIUM' | 'LOW'
+  department?: string
+}
+
+/** Client record summary passed into agent context */
+export interface ClientRecord {
+  id: string
+  name: string
+  industry: string
+  companySize: string
+  website?: string
+  techStack: unknown[]
+  notes?: string
+}
+
+/** RAG retrieval result */
+export interface RAGResult {
+  chunks: Array<{
+    chunkId: string
+    documentId: string
+    content: string
+    score: number
+    sourceTitle: string
+  }>
+  conflicts: ConflictFound[]
+}
+
+/** Full context assembled for an agent before it runs */
+export interface AgentContext {
+  sessionId: string
+  clientId: string | null
+  userId: string
+  assembledContext: string
+  ragResult: RAGResult | null
+  stakeholders: StakeholderSummary[]
+  clientRecord: ClientRecord | null
+}
+
+/** A single message in a conversation turn (matches Anthropic message format) */
+export interface ConversationMessage {
+  role: 'user' | 'assistant'
+  content: string | ContentBlock[]
+}
+
+/** Content block types used in messages */
+export type ContentBlock =
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock
+  | ImageBlock
+
+export interface TextBlock {
+  type: 'text'
+  text: string
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use'
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result'
+  tool_use_id: string
+  content: string
+  is_error?: boolean
+}
+
+export interface ImageBlock {
+  type: 'image'
+  source: {
+    type: 'base64'
+    media_type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+    data: string
+  }
+}
+
+/** Result from executing a tool */
+export interface ToolResult {
+  success: boolean
+  data: unknown
+  error?: string
+  durationMs: number
+}
+
+/** Session mode determines which agent handles the request */
+export type SessionMode =
+  | 'intake'
+  | 'product'
+  | 'process'
+  | 'competitive'
+  | 'stakeholder'

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@axis/inference": "workspace:*",
+    "@axis/tools": "workspace:*",
     "@axis/types": "workspace:*"
   },
   "devDependencies": {
