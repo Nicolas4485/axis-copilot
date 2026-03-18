@@ -15,6 +15,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@axis/inference": "workspace:*",
     "@axis/ingestion": "workspace:*",
     "@axis/types": "workspace:*",
     "@prisma/client": "^5.14.0",
