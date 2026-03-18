@@ -9,9 +9,14 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@axis/inference": "workspace:*",
+    "@axis/ingestion": "workspace:*",
+    "@axis/knowledge-graph": "workspace:*",
+    "@axis/rag": "workspace:*",
     "@axis/types": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.4.0"
   }
 }

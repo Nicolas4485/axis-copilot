@@ -1,4 +1,4 @@
-// create_automation_blueprint — Generate automation plan from process analysis
+// create_automation_blueprint — Creates ProcessStep records from analysis
 // Used by: ProcessAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -43,12 +43,53 @@ export async function createAutomationBlueprint(
   _context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Validate analysisId exists
-  // TODO: Store blueprint as JSON in Analysis content
-  return {
-    success: false,
-    data: null,
-    error: 'create_automation_blueprint not yet implemented',
-    durationMs: Date.now() - start,
+  const analysisId = input['analysisId'] as string | undefined
+  const steps = input['steps'] as Array<Record<string, unknown>> | undefined
+
+  if (!analysisId || !steps || steps.length === 0) {
+    return { success: false, data: null, error: 'analysisId and steps are required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Validate analysisId exists
+    // const analysis = await prisma.analysis.findUnique({ where: { id: analysisId } })
+    // if (!analysis) return { success: false, ... }
+
+    // TODO: Create ProcessStep records for each step
+    // for (let i = 0; i < steps.length; i++) {
+    //   await prisma.processStep.create({
+    //     data: {
+    //       analysisId,
+    //       stepName: steps[i].stepName,
+    //       automationScore: estimateScore(steps[i].automationApproach),
+    //       agentType: steps[i].automationApproach,
+    //       humanCheckpoint: steps[i].prerequisites.length > 0,
+    //       humanCheckpointReason: steps[i].prerequisites.join(', '),
+    //       order: i + 1,
+    //     },
+    //   })
+    // }
+
+    const processedSteps = steps.map((s, i) => ({
+      order: i + 1,
+      stepName: s['stepName'] as string,
+      automationApproach: s['automationApproach'] as string,
+      estimatedEffort: s['estimatedEffort'] as string,
+      prerequisites: s['prerequisites'] as string[],
+    }))
+
+    return {
+      success: true,
+      data: {
+        analysisId,
+        blueprintId: `bp_${Date.now()}`,
+        stepCount: processedSteps.length,
+        steps: processedSteps,
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to create blueprint: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

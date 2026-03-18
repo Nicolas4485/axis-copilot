@@ -28,13 +28,32 @@ export async function generateComparisonMatrix(
   _context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Fetch CompetitorEntry records by IDs
-  // TODO: Build unified feature matrix
-  // TODO: Identify differentiators and gaps
-  return {
-    success: false,
-    data: null,
-    error: 'generate_comparison_matrix not yet implemented',
-    durationMs: Date.now() - start,
+  const competitorIds = input['competitorIds'] as string[] | undefined
+
+  if (!competitorIds || competitorIds.length === 0) {
+    return { success: false, data: null, error: 'competitorIds array is required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Fetch CompetitorEntry records by IDs
+    // const competitors = await prisma.competitorEntry.findMany({
+    //   where: { id: { in: competitorIds } },
+    // })
+
+    // TODO: Build unified feature matrix
+    // Collect all unique features, then mark presence per competitor
+
+    return {
+      success: true,
+      data: {
+        competitorCount: competitorIds.length,
+        matrix: [],
+        message: 'Comparison matrix will be populated when competitor data is stored',
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to generate matrix: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

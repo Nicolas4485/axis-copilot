@@ -9,3 +9,6 @@ export interface RequestContext {
   userId: string
   timestamp: Date
 }
+
+// Encryption utilities
+export { encrypt, decrypt } from './encryption.js'

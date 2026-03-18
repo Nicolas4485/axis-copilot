@@ -1,4 +1,4 @@
-// ingest_document — Trigger document ingestion into the knowledge base
+// ingest_document — Triggers the ingestion pipeline
 // Used by: ProcessAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -36,16 +36,42 @@ export const ingestDocumentDefinition: ToolDefinition = {
 
 export async function ingestDocument(
   input: Record<string, unknown>,
-  _context: ToolContext
+  context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Delegate to @axis/ingestion pipeline
-  // TODO: Create KnowledgeDocument record
-  // TODO: Return document ID and chunk count
-  return {
-    success: false,
-    data: null,
-    error: 'ingest_document not yet implemented',
-    durationMs: Date.now() - start,
+  const fileId = input['fileId'] as string | undefined
+  const userId = (input['userId'] as string | undefined) ?? context.userId
+  const options = input['options'] as Record<string, unknown> | undefined
+
+  if (!fileId) {
+    return { success: false, data: null, error: 'fileId is required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Fetch file content from Drive or upload storage
+    // For now, this tool triggers async ingestion via the batch processor
+    const { BatchProcessor } = await import('@axis/ingestion')
+    const processor = new BatchProcessor()
+
+    const jobId = await processor.submitBatch({
+      fileIds: [fileId],
+      userId,
+      ...(options?.['clientId'] ? { clientId: options['clientId'] as string } : {}),
+      sourceType: (options?.['sourceType'] as 'GDRIVE' | 'UPLOAD' | 'WEB' | 'MANUAL') ?? 'GDRIVE',
+    })
+
+    return {
+      success: true,
+      data: {
+        jobId,
+        fileId,
+        status: 'queued',
+        message: `Document ${fileId} queued for ingestion (job: ${jobId})`,
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to trigger ingestion: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

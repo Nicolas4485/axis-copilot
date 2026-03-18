@@ -1,4 +1,4 @@
-// get_market_context — Retrieve market intel for an industry
+// get_market_context — Query knowledge graph + DB for industry intel
 // Used by: CompetitiveAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -24,12 +24,31 @@ export async function getMarketContext(
   _context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Query knowledge graph for industry entities
-  // TODO: Query analyses that mention this industry
-  return {
-    success: false,
-    data: null,
-    error: 'get_market_context not yet implemented',
-    durationMs: Date.now() - start,
+  const industry = input['industry'] as string | undefined
+
+  if (!industry) {
+    return { success: false, data: null, error: 'industry is required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Query Neo4j for Industry node and connected entities
+    // const { Neo4jClient, GraphOperations } = await import('@axis/knowledge-graph')
+    // const client = new Neo4jClient()
+    // const ops = new GraphOperations(client)
+    // const subgraph = await ops.findRelated(industry, 3)
+
+    // TODO: Query analyses mentioning this industry
+    // const analyses = await prisma.analysis.findMany({
+    //   where: { content: { path: ['industry'], equals: industry } },
+    // })
+
+    return {
+      success: true,
+      data: { industry, competitors: [], trends: [], analyses: [], message: `No stored market data for ${industry} yet` },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to get market context: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

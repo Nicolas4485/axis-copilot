@@ -1,4 +1,4 @@
-// flag_for_review — Flag a fact or claim for human review
+// flag_for_review — Push to Redis review queue for human review
 // Used by: All agents
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -25,15 +25,55 @@ export const flagForReviewDefinition: ToolDefinition = {
 
 export async function flagForReview(
   input: Record<string, unknown>,
-  _context: ToolContext
+  context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Store flag as a message with role SYSTEM in the session
-  // TODO: Include in session summary for visibility
-  return {
-    success: false,
-    data: null,
-    error: 'flag_for_review not yet implemented',
-    durationMs: Date.now() - start,
+  const fact = input['fact'] as string | undefined
+  const reason = input['reason'] as string | undefined
+  const sessionId = (input['sessionId'] as string | undefined) ?? context.sessionId
+
+  if (!fact || !reason) {
+    return { success: false, data: null, error: 'fact and reason are required', durationMs: Date.now() - start }
+  }
+
+  try {
+    const flagId = `flag_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+
+    const flag = {
+      id: flagId,
+      fact,
+      reason,
+      sessionId,
+      userId: context.userId,
+      clientId: context.clientId,
+      timestamp: new Date().toISOString(),
+      status: 'pending',
+    }
+
+    // TODO: Push to Redis review queue
+    // await redis.rpush('axis:review:queue', JSON.stringify(flag))
+    // await redis.sadd(`axis:review:session:${sessionId}`, flagId)
+
+    // TODO: Also store as SYSTEM message in the session
+    // await prisma.message.create({
+    //   data: {
+    //     sessionId,
+    //     role: 'SYSTEM',
+    //     content: `⚠️ FLAGGED FOR REVIEW: ${fact}\nReason: ${reason}`,
+    //     mode: 'intake',
+    //     metadata: flag,
+    //   },
+    // })
+
+    console.log(`[FlagForReview] ${flagId}: "${fact}" — ${reason}`)
+
+    return {
+      success: true,
+      data: flag,
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to flag for review: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

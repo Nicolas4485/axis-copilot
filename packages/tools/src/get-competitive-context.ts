@@ -1,4 +1,4 @@
-// get_competitive_context — Retrieve stored competitive intel for a client
+// get_competitive_context — Query stored competitive intel for a client
 // Used by: ProductAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -24,12 +24,28 @@ export async function getCompetitiveContext(
   _context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Query Analysis records of type COMPETITIVE for this client
-  // TODO: Query CompetitorEntry records linked to those analyses
-  return {
-    success: false,
-    data: null,
-    error: 'get_competitive_context not yet implemented',
-    durationMs: Date.now() - start,
+  const clientId = input['clientId'] as string | undefined
+
+  if (!clientId) {
+    return { success: false, data: null, error: 'clientId is required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Query Analysis records of type COMPETITIVE + CompetitorEntry
+    // const analyses = await prisma.analysis.findMany({
+    //   where: { clientId, type: 'COMPETITIVE' },
+    //   include: { competitors: true },
+    //   orderBy: { createdAt: 'desc' },
+    //   take: 5,
+    // })
+
+    return {
+      success: true,
+      data: { clientId, analyses: [], competitorCount: 0, message: 'No competitive analyses found yet' },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to get competitive context: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

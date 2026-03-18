@@ -1,4 +1,4 @@
-// search_knowledge_base — Vector search over indexed documents
+// search_knowledge_base — Calls RAGEngine for semantic search
 // Used by: All agents
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -25,16 +25,45 @@ export const searchKnowledgeBaseDefinition: ToolDefinition = {
 
 export async function searchKnowledgeBase(
   input: Record<string, unknown>,
-  _context: ToolContext
+  context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Generate embedding for query via InferenceEngine
-  // TODO: Vector search via pgvector
-  // TODO: Return chunks with scores and source attribution
-  return {
-    success: false,
-    data: null,
-    error: 'search_knowledge_base not yet implemented',
-    durationMs: Date.now() - start,
+  const query = input['query'] as string | undefined
+  const clientId = (input['clientId'] as string | undefined) ?? context.clientId
+  const limit = (input['limit'] as number | undefined) ?? 5
+
+  if (!query || query.trim().length === 0) {
+    return { success: false, data: null, error: 'Query is required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // Import RAGEngine dynamically to avoid circular deps at module level
+    const { RAGEngine } = await import('@axis/rag')
+    const rag = new RAGEngine()
+
+    const result = await rag.query(query, context.userId, clientId ?? null, {
+      maxChunks: limit,
+    })
+
+    return {
+      success: true,
+      data: {
+        query,
+        citationCount: result.citations.length,
+        citations: result.citations.map((c) => ({
+          sourceTitle: c.sourceTitle,
+          content: c.content,
+          relevanceScore: c.relevanceScore,
+        })),
+        conflictCount: result.conflicts.length,
+        conflicts: result.conflicts,
+        graphInsightCount: result.graphInsights.length,
+        tokensUsed: result.tokensUsed,
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Knowledge base search failed: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

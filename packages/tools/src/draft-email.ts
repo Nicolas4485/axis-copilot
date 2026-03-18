@@ -1,4 +1,4 @@
-// draft_email — Generate a stakeholder communication email
+// draft_email — Uses InferenceEngine email_draft route (Claude Sonnet)
 // Used by: StakeholderAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -27,15 +27,62 @@ export const draftEmailDefinition: ToolDefinition = {
 
 export async function draftEmail(
   input: Record<string, unknown>,
-  _context: ToolContext
+  toolContext: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Look up stakeholder details from DB
-  // TODO: Call InferenceEngine.route('user_email') for Claude Sonnet drafting
-  return {
-    success: false,
-    data: null,
-    error: 'draft_email not yet implemented',
-    durationMs: Date.now() - start,
+  const stakeholderId = input['stakeholderId'] as string | undefined
+  const purpose = input['purpose'] as string | undefined
+  const tone = input['tone'] as string | undefined
+  const emailContext = input['context'] as string | undefined
+
+  if (!stakeholderId || !purpose || !tone || !emailContext) {
+    return { success: false, data: null, error: 'stakeholderId, purpose, tone, and context are required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Look up stakeholder details from DB
+    // const stakeholder = await prisma.stakeholder.findUnique({
+    //   where: { id: stakeholderId },
+    // })
+    const stakeholderName = 'Stakeholder' // Placeholder
+
+    // Use InferenceEngine to draft via Claude Sonnet
+    const { InferenceEngine } = await import('@axis/inference')
+    const engine = new InferenceEngine()
+
+    const response = await engine.route('user_email', {
+      systemPromptKey: 'EMAIL_DRAFT',
+      messages: [{
+        role: 'user',
+        content: `Draft an email with the following details:
+Recipient: ${stakeholderName} (ID: ${stakeholderId})
+Purpose: ${purpose}
+Tone: ${tone}
+Context: ${emailContext}`,
+      }],
+      sessionId: toolContext.sessionId,
+      userId: toolContext.userId,
+    })
+
+    const emailText = response.content
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n')
+
+    return {
+      success: true,
+      data: {
+        stakeholderId,
+        purpose,
+        tone,
+        email: emailText,
+        model: response.model,
+        tokensUsed: response.inputTokens + response.outputTokens,
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to draft email: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }

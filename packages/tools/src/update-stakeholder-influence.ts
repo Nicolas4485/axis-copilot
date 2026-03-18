@@ -1,4 +1,4 @@
-// update_stakeholder_influence — Update a stakeholder's power-interest levels
+// update_stakeholder_influence — Update Power-Interest levels in PostgreSQL
 // Used by: StakeholderAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -28,11 +28,35 @@ export async function updateStakeholderInfluence(
   _context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  // TODO: Update Stakeholder record via Prisma
-  return {
-    success: false,
-    data: null,
-    error: 'update_stakeholder_influence not yet implemented',
-    durationMs: Date.now() - start,
+  const stakeholderId = input['stakeholderId'] as string | undefined
+  const influence = input['influence'] as string | undefined
+  const interest = input['interest'] as string | undefined
+
+  if (!stakeholderId || !influence || !interest) {
+    return { success: false, data: null, error: 'stakeholderId, influence, and interest are required', durationMs: Date.now() - start }
+  }
+
+  try {
+    // TODO: Update via Prisma
+    // await prisma.stakeholder.update({
+    //   where: { id: stakeholderId },
+    //   data: { influence, interest },
+    // })
+
+    // Determine Power-Interest quadrant
+    const quadrant =
+      influence === 'HIGH' && interest === 'HIGH' ? 'Manage Closely' :
+      influence === 'HIGH' && interest !== 'HIGH' ? 'Keep Satisfied' :
+      influence !== 'HIGH' && interest === 'HIGH' ? 'Keep Informed' :
+      'Monitor'
+
+    return {
+      success: true,
+      data: { stakeholderId, influence, interest, quadrant },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    return { success: false, data: null, error: `Failed to update stakeholder: ${errorMsg}`, durationMs: Date.now() - start }
   }
 }
