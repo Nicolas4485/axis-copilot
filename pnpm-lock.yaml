@@ -17,12 +17,21 @@ importers:
 
   apps/api:
     dependencies:
+      '@axis/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@axis/inference':
         specifier: workspace:*
         version: link:../../packages/inference
       '@axis/ingestion':
         specifier: workspace:*
         version: link:../../packages/ingestion
+      '@axis/knowledge-graph':
+        specifier: workspace:*
+        version: link:../../packages/knowledge-graph
+      '@axis/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       '@axis/types':
         specifier: workspace:*
         version: link:../../packages/types

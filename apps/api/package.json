@@ -15,8 +15,11 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@axis/agents": "workspace:*",
     "@axis/inference": "workspace:*",
     "@axis/ingestion": "workspace:*",
+    "@axis/knowledge-graph": "workspace:*",
+    "@axis/tools": "workspace:*",
     "@axis/types": "workspace:*",
     "@prisma/client": "^5.14.0",
     "cors": "^2.8.5",
