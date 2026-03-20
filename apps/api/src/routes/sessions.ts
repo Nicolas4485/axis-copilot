@@ -138,6 +138,8 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
     }
 
     // Emit token event with full content
+    console.log('[SSE] Agent response content length:', agentResponse.content.length)
+    console.log('[SSE] Agent response content preview:', agentResponse.content.slice(0, 200))
     sendEvent('token', { content: agentResponse.content })
 
     // Emit sources

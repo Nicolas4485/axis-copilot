@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { sessions, streamMessage, type SSEEvent, type Message } from '@/lib/api'
 import { VoiceInput } from '@/components/voice-input'
@@ -19,7 +19,9 @@ const MODE_LABELS: Record<string, string> = {
 }
 
 export default function SessionPage() {
-  const { id } = useParams<{ id: string }>()
+  const { id: paramId } = useParams<{ id: string }>()
+  const router = useRouter()
+  const [sessionId, setSessionId] = useState(paramId === 'new' ? null : paramId)
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<string>('intake')
   const [streaming, setStreaming] = useState(false)
@@ -35,15 +37,15 @@ export default function SessionPage() {
   const abortRef = useRef<AbortController | null>(null)
 
   const { data: session, refetch } = useQuery({
-    queryKey: ['session', id],
-    queryFn: () => sessions.get(id),
-    enabled: id !== 'new',
+    queryKey: ['session', sessionId],
+    queryFn: () => sessions.get(sessionId!),
+    enabled: !!sessionId,
   })
 
   const { data: costData } = useQuery({
-    queryKey: ['session-cost', id],
-    queryFn: () => sessions.getCost(id),
-    enabled: id !== 'new',
+    queryKey: ['session-cost', sessionId],
+    queryFn: () => sessions.getCost(sessionId!),
+    enabled: !!sessionId,
     refetchInterval: 10_000,
   })
 
@@ -51,7 +53,7 @@ export default function SessionPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [session?.messages, streamContent])
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!input.trim() || streaming) return
 
     setStreaming(true)
@@ -60,8 +62,24 @@ export default function SessionPage() {
     setSources([])
     setConflicts([])
 
+    // Create session on first message if needed
+    let activeSessionId = sessionId
+    if (!activeSessionId) {
+      try {
+        const newSession = await sessions.create({ mode, title: input.trim().slice(0, 60) })
+        activeSessionId = newSession.id
+        setSessionId(activeSessionId)
+        router.replace(`/session/${activeSessionId}`)
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to create session'
+        setStreaming(false)
+        alert(errorMsg)
+        return
+      }
+    }
+
     const controller = streamMessage(
-      id,
+      activeSessionId,
       input.trim(),
       { mode, ...(imageBase64 ? { imageBase64 } : {}) },
       (event: SSEEvent) => {
@@ -85,10 +103,15 @@ export default function SessionPage() {
             break
           case 'done':
             setStreaming(false)
-            setStreamContent('')
             setImageBase64(null)
             setImagePreview(null)
-            void refetch()
+            // Wait for refetch to complete before clearing stream content
+            // so the response stays visible until the DB messages load
+            refetch().then(() => {
+              setStreamContent('')
+            }).catch(() => {
+              // Keep stream content visible even if refetch fails
+            })
             break
         }
       }
@@ -96,7 +119,7 @@ export default function SessionPage() {
 
     abortRef.current = controller
     setInput('')
-  }, [input, streaming, id, mode, imageBase64, refetch])
+  }, [input, streaming, sessionId, mode, imageBase64, refetch, router])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -122,11 +145,11 @@ export default function SessionPage() {
 
   const allMessages: Array<Message | { id: string; role: 'ASSISTANT'; content: string; streaming: true }> = [
     ...(session?.messages ?? []),
-    ...(streaming && streamContent ? [{
+    ...(streamContent ? [{
       id: 'streaming',
       role: 'ASSISTANT' as const,
       content: streamContent,
-      streaming: true as const,
+      streaming: streaming as true,
     }] : []),
   ]
 

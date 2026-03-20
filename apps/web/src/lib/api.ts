@@ -167,6 +167,9 @@ export function streamMessage(
   const controller = new AbortController()
   const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
 
+  console.log('[SSE] Sending to', `${API_BASE}/api/sessions/${sessionId}/messages`)
+  console.log('[SSE] Token present:', !!token)
+
   fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: {
@@ -177,8 +180,11 @@ export function streamMessage(
     signal: controller.signal,
   })
     .then(async (response) => {
+      console.log('[SSE] Response status:', response.status, 'body:', !!response.body)
       if (!response.ok || !response.body) {
-        onEvent?.({ type: 'done', error: `HTTP ${response.status}` })
+        const text = await response.text().catch(() => '')
+        console.error('[SSE] Error response:', text)
+        onEvent?.({ type: 'done', error: `HTTP ${response.status}: ${text}` })
         return
       }
 

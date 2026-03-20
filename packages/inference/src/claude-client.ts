@@ -45,7 +45,10 @@ export class ClaudeClient {
   constructor(onCostEntry?: (entry: CostEntry) => void) {
     const apiKey = process.env['ANTHROPIC_API_KEY']
     if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY environment variable is required')
+      // Defer the error to when a call is actually made — allows local-only mode
+      this.client = null as unknown as Anthropic
+      this.onCostEntry = onCostEntry
+      return
     }
 
     this.client = new Anthropic({ apiKey })
@@ -70,6 +73,10 @@ export class ClaudeClient {
       userId?: string
     }
   ): Promise<InferenceResponse> {
+    if (!this.client) {
+      throw new Error('ANTHROPIC_API_KEY not configured — Claude calls unavailable. Set the key in .env or use local inference only.')
+    }
+
     const startTime = Date.now()
     const modelId = MODEL_IDS[model]
     const maxTokens = options?.maxTokens ?? DEFAULT_MAX_TOKENS

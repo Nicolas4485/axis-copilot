@@ -58,8 +58,8 @@
            border-b-2 border-transparent hover:border-[var(--border)] transition-colors cursor-pointer; }
   .tab-active { @apply text-[var(--gold)] border-[var(--gold)]; }
   .badge { @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full; }
-  .badge-gold { @apply bg-[var(--gold)]/10 text-[var(--gold)]; }
-  .badge-green { @apply bg-[var(--success)]/10 text-[var(--success)]; }
-  .badge-red { @apply bg-[var(--error)]/10 text-[var(--error)]; }
+  .badge-gold { @apply text-[var(--gold)]; background-color: rgba(200, 169, 110, 0.1); }
+  .badge-green { @apply text-[var(--success)]; background-color: rgba(74, 222, 128, 0.1); }
+  .badge-red { @apply text-[var(--error)]; background-color: rgba(248, 113, 113, 0.1); }
   .streaming-cursor::after { content: '|'; @apply animate-pulse text-[var(--gold)]; }
 }
