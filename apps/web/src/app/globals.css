@@ -1,3 +1,65 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --gold: #C8A96E;
+    --gold-dim: #A08550;
+    --bg-primary: #0A0A0F;
+    --bg-secondary: #12121A;
+    --bg-tertiary: #1A1A25;
+    --bg-hover: #22222F;
+    --border: #2A2A3A;
+    --border-active: #3A3A4A;
+    --text-primary: #E8E8EE;
+    --text-secondary: #9898A8;
+    --text-muted: #686878;
+    --success: #4ADE80;
+    --error: #F87171;
+    --warning: #FBBF24;
+  }
+
+  html { color-scheme: dark; }
+
+  body {
+    @apply bg-[var(--bg-primary)] text-[var(--text-primary)] antialiased;
+    font-family: var(--font-jetbrains), ui-monospace, monospace;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-playfair), ui-serif, serif;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-[var(--gold)] text-[var(--bg-primary)] font-medium rounded-lg
+           hover:bg-[var(--gold-dim)] transition-colors text-sm;
+  }
+  .btn-secondary {
+    @apply px-4 py-2 border border-[var(--border)] text-[var(--text-secondary)] rounded-lg
+           hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] transition-colors text-sm;
+  }
+  .card {
+    @apply bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4;
+  }
+  .input {
+    @apply w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg
+           text-[var(--text-primary)] placeholder-[var(--text-muted)] text-sm
+           focus:outline-none focus:border-[var(--gold)] transition-colors;
+  }
+  .tab { @apply px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]
+           border-b-2 border-transparent hover:border-[var(--border)] transition-colors cursor-pointer; }
+  .tab-active { @apply text-[var(--gold)] border-[var(--gold)]; }
+  .badge { @apply inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full; }
+  .badge-gold { @apply bg-[var(--gold)]/10 text-[var(--gold)]; }
+  .badge-green { @apply bg-[var(--success)]/10 text-[var(--success)]; }
+  .badge-red { @apply bg-[var(--error)]/10 text-[var(--error)]; }
+  .streaming-cursor::after { content: '|'; @apply animate-pulse text-[var(--gold)]; }
+}

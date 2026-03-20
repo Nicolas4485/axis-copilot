@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import { Playfair_Display, JetBrains_Mono } from 'next/font/google'
+import { Providers } from '@/lib/providers'
+import { Sidebar } from '@/components/sidebar'
 import './globals.css'
 
 const playfair = Playfair_Display({
@@ -25,7 +27,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${playfair.variable} ${jetbrainsMono.variable}`}>
-        {children}
+        <Providers>
+          <div className="flex h-screen overflow-hidden">
+            <Sidebar />
+            <main className="flex-1 overflow-y-auto">
+              {children}
+            </main>
+          </div>
+        </Providers>
       </body>
     </html>
   )

@@ -10,10 +10,12 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@axis/types": "workspace:*",
+    "@tanstack/react-query": "^5.91.2",
+    "lucide-react": "^0.577.0",
     "next": "14.2.5",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0",
-    "@axis/types": "workspace:*"
+    "react-dom": "^18.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
