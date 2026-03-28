@@ -18,12 +18,14 @@ import type {
 const MODEL_IDS: Record<ClaudeModel, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6-20250514',
+  opus: 'claude-opus-4-6-20250514',
 }
 
 /** Cost per million tokens (input/output) in USD */
 const PRICING: Record<ClaudeModel, { input: number; output: number; cacheRead: number }> = {
   haiku: { input: 0.80, output: 4.00, cacheRead: 0.08 },
   sonnet: { input: 3.00, output: 15.00, cacheRead: 0.30 },
+  opus: { input: 15.00, output: 75.00, cacheRead: 1.50 },
 }
 
 const DEFAULT_MAX_TOKENS = 2048

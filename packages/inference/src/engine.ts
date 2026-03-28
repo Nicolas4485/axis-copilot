@@ -8,6 +8,7 @@ import type {
   InferenceTask,
   ToolDefinition,
   CostEntry,
+  ClaudeModel,
 } from './types.js'
 import { LocalClient } from './local-client.js'
 import { ClaudeClient } from './claude-client.js'
@@ -69,18 +70,8 @@ export class InferenceEngine {
     const systemPrompt = getPromptText(options.systemPromptKey)
     const maxTokens = options.maxTokens ?? route.maxTokens
 
-    // Try primary target
-    if (route.primary === 'local') {
-      return this.executeLocal(task, systemPrompt, {
-        messages: options.messages,
-        ...(options.tools ? { tools: options.tools } : {}),
-        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
-        ...(options.userId ? { userId: options.userId } : {}),
-      }, maxTokens, route.jsonMode)
-    }
-
-    // Claude primary
-    const claudeModel = route.claudeModel ?? 'haiku'
+    // All tasks route through Anthropic
+    const claudeModel = route.claudeModel
     return this.executeClaude(task, claudeModel, systemPrompt, options, maxTokens)
   }
 
@@ -224,12 +215,12 @@ Message: ${message}`,
   }
 
   /**
-   * Execute via Claude (Haiku or Sonnet).
+   * Execute via Claude (Haiku, Sonnet, or Opus).
    * Logs cost automatically.
    */
   private async executeClaude(
     task: InferenceTask,
-    model: 'haiku' | 'sonnet',
+    model: ClaudeModel,
     systemPrompt: string,
     options: {
       messages: InferenceMessage[]

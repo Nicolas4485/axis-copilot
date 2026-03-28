@@ -21,6 +21,7 @@ interface TranscriptEntry {
 export function AriaLivePanel({ sessionId }: AriaLivePanelProps) {
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [textInput, setTextInput] = useState('')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
 
   const ariaLive = useAriaLive({
@@ -45,6 +46,7 @@ export function AriaLivePanel({ sessionId }: AriaLivePanelProps) {
     },
     onError: (error) => {
       console.error('[AriaLive] Error:', error)
+      setErrorMsg(error)
     },
   })
 
@@ -104,11 +106,16 @@ export function AriaLivePanel({ sessionId }: AriaLivePanelProps) {
               brainstorm strategies, and get real-time analysis from specialist agents.
             </p>
           </div>
+          {errorMsg && (
+            <div className="px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm max-w-md text-center">
+              {errorMsg}
+            </div>
+          )}
           <button
-            onClick={() => void ariaLive.connect()}
+            onClick={() => { setErrorMsg(null); void ariaLive.connect() }}
             className="px-6 py-3 rounded-lg bg-[var(--gold)] text-black font-mono text-sm hover:opacity-90 transition-opacity"
           >
-            Start Live Session
+            {errorMsg ? 'Retry Connection' : 'Start Live Session'}
           </button>
         </div>
       ) : (

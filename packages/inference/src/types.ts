@@ -54,7 +54,7 @@ export const PROMPT_TIER_LIMITS: Record<PromptTier, number> = {
 }
 
 /** Which Claude model to use */
-export type ClaudeModel = 'haiku' | 'sonnet'
+export type ClaudeModel = 'haiku' | 'sonnet' | 'opus'
 
 /** Cost record for tracking spend */
 export interface CostEntry {

@@ -22,6 +22,7 @@ import {
   flagForReview, flagForReviewDefinition,
   ingestDocument, ingestDocumentDefinition,
   analyzeImage, analyzeImageDefinition,
+  scheduleAriaMeeting, scheduleAriaMeetingDefinition,
 } from '@axis/tools'
 
 interface ToolEntry {
@@ -50,6 +51,7 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   flag_for_review: { definition: flagForReviewDefinition, execute: flagForReview },
   ingest_document: { definition: ingestDocumentDefinition, execute: ingestDocument },
   analyze_image: { definition: analyzeImageDefinition, execute: analyzeImage },
+  schedule_aria_meeting: { definition: scheduleAriaMeetingDefinition, execute: scheduleAriaMeeting },
 }
 
 export class ToolRegistry {

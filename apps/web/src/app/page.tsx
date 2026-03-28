@@ -94,7 +94,7 @@ export default function Dashboard() {
             <StatusItem label="Redis" status={healthData.redis} />
             <StatusItem label="Neo4j" status={healthData.neo4j} />
             <StatusItem label="Anthropic" status={healthData.anthropic} />
-            <StatusItem label="Ollama" status={healthData.localInference === 'active' ? 'ok' : 'unavailable'} />
+            <StatusItem label="Claude" status={healthData.anthropic === 'ok' ? 'ok' : 'unavailable'} />
           </div>
         </section>
       )}

@@ -13,15 +13,15 @@ export function HealthIndicator() {
 
   if (!data) return null
 
-  const ollama = data.localInference === 'active'
+  const anthropicOk = data.anthropic === 'ok'
   const services = [data.db, data.redis, data.neo4j, data.anthropic].filter((s) => s === 'ok').length
 
   return (
     <div className="flex items-center gap-3 text-xs">
-      <div className="flex items-center gap-1.5" title={`Ollama: ${data.localInference}`}>
-        <Cpu size={14} className={ollama ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'} />
-        <span className={ollama ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'}>
-          Qwen3 {ollama ? 'Active' : 'Off'}
+      <div className="flex items-center gap-1.5" title={`Anthropic: ${data.anthropic}`}>
+        <Cpu size={14} className={anthropicOk ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'} />
+        <span className={anthropicOk ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'}>
+          Claude {anthropicOk ? 'Active' : 'Off'}
         </span>
       </div>
       <div className="flex items-center gap-1.5" title={`Services: ${services}/4 online`}>

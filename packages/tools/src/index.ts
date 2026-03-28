@@ -23,6 +23,7 @@ export { updateStakeholderInfluence, updateStakeholderInfluenceDefinition } from
 export { flagForReview, flagForReviewDefinition } from './flag-for-review.js'
 export { ingestDocument, ingestDocumentDefinition } from './ingest-document.js'
 export { analyzeImage, analyzeImageDefinition } from './analyze-image.js'
+export { scheduleAriaMeeting, scheduleAriaMeetingDefinition } from './schedule-aria-meeting.js'
 
 // Google Workspace integration
 export * as google from './google/index.js'

@@ -13,6 +13,7 @@ const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/calendar.events',
 ].join(' ')
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'

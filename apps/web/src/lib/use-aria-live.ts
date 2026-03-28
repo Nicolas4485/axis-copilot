@@ -71,28 +71,30 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const connect = useCallback(async () => {
     try {
       setState('connecting')
+      console.log('[AriaLive] Connecting...')
 
       // Get session token from backend
       const config = await aria.getSessionToken(sessionId)
       sessionConfigRef.current = config
+      console.log('[AriaLive] Got session config, model:', config.model)
 
       // Open WebSocket to Gemini Live
       const wsUrl = `${GEMINI_LIVE_WS_BASE}?key=${config.apiKey}`
+      console.log('[AriaLive] Opening WebSocket to:', wsUrl.replace(config.apiKey, 'API_KEY_HIDDEN'))
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
       ws.onopen = () => {
-        // Send setup message with system instruction and tools
+        console.log('[AriaLive] WebSocket opened, sending setup...')
         const setupMessage = {
           setup: {
             model: `models/${config.model}`,
             generationConfig: {
-              responseModalities: ['AUDIO', 'TEXT'],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
-              },
+              responseModalities: ['AUDIO'],
             },
-            systemInstruction: { parts: [{ text: config.systemInstruction }] },
+            systemInstruction: {
+              parts: [{ text: config.systemInstruction }],
+            },
             tools: [{
               functionDeclarations: config.tools.map((t) => ({
                 name: t.name,
@@ -102,14 +104,42 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             }],
           },
         }
+        console.log('[AriaLive] Sending setup for model:', config.model)
         ws.send(JSON.stringify(setupMessage))
-        setIsConnected(true)
-        setState('listening')
       }
 
       ws.onmessage = async (event) => {
         try {
-          const data = JSON.parse(typeof event.data === 'string' ? event.data : await (event.data as Blob).text()) as Record<string, unknown>
+          let data: Record<string, unknown>
+
+          if (event.data instanceof Blob) {
+            // Binary message — could be setupComplete or audio
+            const text = await event.data.text()
+            try {
+              data = JSON.parse(text) as Record<string, unknown>
+            } catch {
+              // Binary audio data or setupComplete (non-JSON binary)
+              if (!isConnected) {
+                console.log('[AriaLive] Setup complete (binary response) — ready')
+                setIsConnected(true)
+                setState('listening')
+              }
+              // TODO: handle audio playback for binary audio chunks
+              return
+            }
+          } else {
+            data = JSON.parse(event.data as string) as Record<string, unknown>
+          }
+
+          console.log('[AriaLive] Received message keys:', Object.keys(data))
+
+          // Handle setup complete — NOW we're connected
+          if (data['setupComplete'] !== undefined) {
+            console.log('[AriaLive] Setup complete (JSON) — ready')
+            setIsConnected(true)
+            setState('listening')
+            return
+          }
 
           // Handle server content (text/audio responses)
           const serverContent = data['serverContent'] as Record<string, unknown> | undefined
@@ -133,6 +163,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
             if (serverContent['turnComplete']) {
               setState('listening')
+              // Reset audio queue for next turn
+              nextPlayTimeRef.current = 0
             }
           }
 
@@ -145,10 +177,6 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             }
           }
 
-          // Handle setup complete
-          if (data['setupComplete']) {
-            console.log('[AriaLive] Setup complete')
-          }
         } catch (err) {
           console.error('[AriaLive] Message parse error:', err)
         }
@@ -157,13 +185,18 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       ws.onerror = (event) => {
         console.error('[AriaLive] WebSocket error:', event)
         setState('error')
-        onError?.('WebSocket connection error')
+        onError?.('WebSocket connection failed — check console for details')
       }
 
       ws.onclose = (event) => {
         console.log('[AriaLive] WebSocket closed:', event.code, event.reason)
         setIsConnected(false)
-        setState('idle')
+        if (event.code !== 1000) {
+          setState('error')
+          onError?.(`Connection closed: ${event.reason || `code ${event.code}`}`)
+        } else {
+          setState('idle')
+        }
         cleanup()
       }
     } catch (err) {
@@ -251,10 +284,15 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         }
 
         // Base64 encode and send
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm.buffer)))
+        const bytes = new Uint8Array(pcm.buffer)
+        let binary = ''
+        for (let j = 0; j < bytes.length; j++) {
+          binary += String.fromCharCode(bytes[j]!)
+        }
+        const base64 = btoa(binary)
         wsRef.current.send(JSON.stringify({
           realtimeInput: {
-            mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: base64 }],
+            audio: { mimeType: 'audio/pcm;rate=16000', data: base64 },
           },
         }))
       }
@@ -319,11 +357,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
     wsRef.current.send(JSON.stringify({
-      clientContent: {
-        turns: [{ role: 'user', parts: [{ text }] }],
-        turnComplete: true,
-      },
+      realtimeInput: { text },
     }))
+    console.log('[AriaLive] Sent text:', text.slice(0, 100))
     setState('thinking')
   }, [])
 
@@ -393,11 +429,13 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     onToolActivity?.(toolActivities)
   }, [sessionId, toolActivities, onToolActivity])
 
-  // ─── Audio playback ───────────────────────────────────────────
+  // ─── Audio playback (queued to avoid overlap) ──────────────────
 
-  const playAudio = useCallback(async (base64Data: string, mimeType: string) => {
+  const nextPlayTimeRef = useRef(0)
+
+  const playAudio = useCallback(async (base64Data: string, _mimeType: string) => {
     try {
-      const ctx = audioContextRef.current ?? new AudioContext()
+      const ctx = audioContextRef.current ?? new AudioContext({ sampleRate: 24000 })
       if (!audioContextRef.current) audioContextRef.current = ctx
 
       const binaryString = atob(base64Data)
@@ -406,29 +444,25 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         bytes[i] = binaryString.charCodeAt(i)
       }
 
-      if (mimeType.includes('pcm')) {
-        // Raw PCM — create audio buffer
-        const int16 = new Int16Array(bytes.buffer)
-        const float32 = new Float32Array(int16.length)
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = (int16[i] ?? 0) / 32768
-        }
-
-        const audioBuffer = ctx.createBuffer(1, float32.length, 24000)
-        audioBuffer.getChannelData(0).set(float32)
-
-        const source = ctx.createBufferSource()
-        source.buffer = audioBuffer
-        source.connect(ctx.destination)
-        source.start()
-      } else {
-        // Encoded audio — decode and play
-        const audioBuffer = await ctx.decodeAudioData(bytes.buffer)
-        const source = ctx.createBufferSource()
-        source.buffer = audioBuffer
-        source.connect(ctx.destination)
-        source.start()
+      // Gemini Live sends PCM int16 at 24kHz
+      const int16 = new Int16Array(bytes.buffer)
+      const float32 = new Float32Array(int16.length)
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = (int16[i] ?? 0) / 32768
       }
+
+      const audioBuffer = ctx.createBuffer(1, float32.length, 24000)
+      audioBuffer.getChannelData(0).set(float32)
+
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(ctx.destination)
+
+      // Queue chunks sequentially — don't overlap
+      const now = ctx.currentTime
+      const startTime = Math.max(now, nextPlayTimeRef.current)
+      source.start(startTime)
+      nextPlayTimeRef.current = startTime + audioBuffer.duration
     } catch (err) {
       console.warn('[AriaLive] Audio playback error:', err)
     }

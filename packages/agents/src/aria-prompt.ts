@@ -156,6 +156,21 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
     },
   },
 
+  // ─── Notification tools ──────────────────────────────────────
+  {
+    name: 'schedule_aria_meeting',
+    description: 'Schedule a calendar meeting when you need user input to proceed. Creates a Google Calendar event with a link to the AXIS live session. Use when you are blocked on a decision, need approval, or want to discuss results.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', description: 'Brief topic (appears in calendar title)' },
+        context: { type: 'string', description: 'Full context: what you need, what decision is required, options identified' },
+        urgency: { type: 'string', enum: ['low', 'medium', 'high'], description: 'High = 15 min, Medium = 1 hour, Low = next available' },
+      },
+      required: ['topic', 'context', 'urgency'],
+    },
+  },
+
   // ─── Delegation tools (Aria routes to worker agents) ────────
   {
     name: 'delegate_product_analysis',

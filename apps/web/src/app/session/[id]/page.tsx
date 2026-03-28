@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { sessions, streamAriaMessage, type SSEEvent, type Message } from '@/lib/api'
 import { VoiceInput } from '@/components/voice-input'
@@ -12,9 +12,33 @@ import {
   Mic, MessageSquare,
 } from 'lucide-react'
 
+/** Auto-creates a session when entering live mode on /session/new */
+function LiveSessionCreator({ onSessionCreated, onError }: { onSessionCreated: (id: string) => void; onError: () => void }) {
+  const createdRef = useRef(false)
+
+  useEffect(() => {
+    if (createdRef.current) return
+    createdRef.current = true
+
+    sessions.create({ title: 'Aria Live Session' })
+      .then((s) => onSessionCreated(s.id))
+      .catch(() => onError())
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="flex-1 flex items-center justify-center">
+      <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+        <div className="w-4 h-4 border-2 border-[var(--gold)] border-t-transparent rounded-full animate-spin" />
+        Connecting to Aria...
+      </div>
+    </div>
+  )
+}
+
 export default function SessionPage() {
   const { id: paramId } = useParams<{ id: string }>()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [sessionId, setSessionId] = useState(paramId === 'new' ? null : paramId)
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<string>('intake')
@@ -26,7 +50,7 @@ export default function SessionPage() {
   const [showSources, setShowSources] = useState(false)
   const [imageBase64, setImageBase64] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
-  const [liveMode, setLiveMode] = useState(false)
+  const [liveMode, setLiveMode] = useState(searchParams.get('live') === 'true')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -192,6 +216,12 @@ export default function SessionPage() {
       {/* Live Mode — Aria Live Panel */}
       {liveMode && sessionId && (
         <AriaLivePanel sessionId={sessionId} />
+      )}
+      {liveMode && !sessionId && (
+        <LiveSessionCreator
+          onSessionCreated={(id) => { setSessionId(id); router.replace(`/session/${id}`) }}
+          onError={() => setLiveMode(false)}
+        />
       )}
 
       {/* Text Mode — Chat Messages */}
