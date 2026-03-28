@@ -7,6 +7,7 @@ import { GSlidesParser } from './gslides-parser.js'
 import { PdfParser } from './pdf-parser.js'
 import { TranscriptParser } from './transcript-parser.js'
 import { DocxParser } from './docx-parser.js'
+import { CodeParser } from './code-parser.js'
 
 export type { DocumentParser } from './types.js'
 export { GDocParser } from './gdoc-parser.js'
@@ -15,13 +16,15 @@ export { GSlidesParser } from './gslides-parser.js'
 export { PdfParser } from './pdf-parser.js'
 export { TranscriptParser } from './transcript-parser.js'
 export { DocxParser } from './docx-parser.js'
+export { CodeParser, codeFileMimeType } from './code-parser.js'
 
-/** All registered parsers */
+/** All registered parsers — order matters: more specific parsers first */
 const PARSERS: DocumentParser[] = [
   new GDocParser(),
   new GSheetParser(),
   new GSlidesParser(),
   new PdfParser(),
+  new CodeParser(),        // Before TranscriptParser so code MIME types don't fall through to transcripts
   new TranscriptParser(),
   new DocxParser(),
 ]

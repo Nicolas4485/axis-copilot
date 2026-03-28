@@ -36,7 +36,7 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
     const clientId = req.body?.clientId as string | undefined
     const sourceType = (req.body?.sourceType as string | undefined) ?? 'UPLOAD'
 
-    const pipeline = new IngestionPipeline()
+    const pipeline = new IngestionPipeline({ prisma })
     const result = await pipeline.ingestDocument(
       file.buffer,
       file.originalname,

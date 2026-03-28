@@ -4,6 +4,7 @@
 // update records → episodic memory → publish event → finalise
 
 import { createHash } from 'node:crypto'
+import type { PrismaClient } from '@prisma/client'
 import { InferenceEngine } from '@axis/inference'
 import { getParser } from './parsers/index.js'
 import { DriveDiscovery } from './drive-discovery.js'
@@ -22,7 +23,6 @@ const CHUNK_TARGET_TOKENS = 500    // 400–600 range
 const CHUNK_MIN_TOKENS = 400
 const CHUNK_MAX_TOKENS = 600
 const CHUNK_OVERLAP_TOKENS = 50
-const EMBED_BATCH_SIZE = 50
 const TOTAL_STEPS = 15
 
 /** Approximate tokens from character count (1 token ≈ 4 chars for English) */
@@ -34,19 +34,26 @@ function estimateTokens(text: string): number {
  * The core ingestion pipeline. Processes a single document through 15 steps.
  *
  * All model calls go through InferenceEngine — never call APIs directly.
+ * All persistence goes through Prisma — no database-agnostic abstractions.
  */
 export class IngestionPipeline {
   private engine: InferenceEngine
   private discovery: DriveDiscovery
+  private prisma: PrismaClient
   private onProgress?: ((event: IngestionProgress) => void) | undefined
 
-  constructor(
-    engine?: InferenceEngine,
+  constructor(options?: {
+    engine?: InferenceEngine
+    prisma?: PrismaClient
     onProgress?: (event: IngestionProgress) => void
-  ) {
-    this.engine = engine ?? new InferenceEngine()
+  }) {
+    if (!options?.prisma) {
+      throw new Error('IngestionPipeline requires a PrismaClient instance. Pass it via { prisma } in the constructor.')
+    }
+    this.engine = options.engine ?? new InferenceEngine()
+    this.prisma = options.prisma
     this.discovery = new DriveDiscovery(this.engine)
-    this.onProgress = onProgress
+    this.onProgress = options.onProgress
   }
 
   /**
@@ -81,12 +88,31 @@ export class IngestionPipeline {
       const checksum = this.computeChecksum(fileContent)
       this.emitProgress(documentId, 'checksum', 2, `Checksum: ${checksum.slice(0, 12)}...`)
 
-      // TODO: Check if document with same checksum already exists
-      // const existing = await prisma.knowledgeDocument.findFirst({ where: { checksum } })
-      // if (existing) return { ...existing, status: 'INDEXED', durationMs: Date.now() - startTime }
+      // Check if document with same checksum already exists
+      const existingByChecksum = await this.prisma.knowledgeDocument.findFirst({
+        where: { checksum, userId },
+      })
+      if (existingByChecksum && existingByChecksum.syncStatus === 'INDEXED') {
+        this.emitProgress(documentId, 'checksum', 2, `Duplicate detected — already indexed as ${existingByChecksum.id}`)
+        return {
+          documentId: existingByChecksum.id,
+          clientId: existingByChecksum.clientId,
+          docType: (existingByChecksum.docType as DocType) ?? 'GENERAL',
+          chunkCount: existingByChecksum.chunkCount ?? 0,
+          entityCount: existingByChecksum.entityCount ?? 0,
+          conflicts: [],
+          durationMs: Date.now() - startTime,
+          status: 'INDEXED',
+        }
+      }
 
       // Step 3: Attribute — determine which client this document belongs to
       if (!clientId) {
+        const knownClients = await this.prisma.client.findMany({
+          where: { userId },
+          select: { id: true, name: true, industry: true },
+        })
+
         const attribution = await this.discovery.attributeFile(
           {
             fileId: options?.sourceId ?? documentId,
@@ -97,7 +123,7 @@ export class IngestionPipeline {
             modifiedTime: new Date().toISOString(),
             size: fileContent.length,
           },
-          [], // TODO: Load known clients from Prisma
+          knownClients.map((c) => ({ id: c.id, name: c.name, industry: c.industry ?? '', aliases: [] })),
           fileContent.toString('utf-8').slice(0, 500)
         )
         clientId = attribution.clientId
@@ -118,7 +144,7 @@ export class IngestionPipeline {
         `Parsed: ${parsed.metadata.wordCount} words, ${parsed.sections.length} sections`
       )
 
-      // Step 5: Classify — determine document type from parser signals + Qwen3
+      // Step 5: Classify — determine document type from parser signals + model
       docType = await this.classifyDocument(parsed, filename)
       this.emitProgress(documentId, 'classify', 5, `Classified as: ${docType}`)
 
@@ -129,32 +155,31 @@ export class IngestionPipeline {
         `Chunked into ${chunkCount} pieces (target: ${CHUNK_TARGET_TOKENS} tokens)`
       )
 
-      // Step 7: Embed — generate embeddings via Voyage AI in batches of 50
-      const embeddings = await this.embedChunks(chunks)
+      // Step 7: Embed — skipped (zero vectors until Voyage AI is integrated)
       this.emitProgress(documentId, 'embed', 7,
-        `Generated ${embeddings.length} embeddings in ${Math.ceil(chunks.length / EMBED_BATCH_SIZE)} batch(es)`
+        `Embedding skipped (Voyage AI pending) — ${chunkCount} chunks ready`
       )
 
-      // Step 8: Store chunks — save to PostgreSQL with embeddings
-      await this.storeChunks(documentId, chunks, embeddings)
+      // Step 8: Store chunks — save to PostgreSQL via Prisma
+      await this.storeChunks(documentId, chunks)
       this.emitProgress(documentId, 'store_chunks', 8,
-        `Stored ${chunkCount} chunks with embeddings`
+        `Stored ${chunkCount} chunks in database`
       )
 
-      // Step 9: Extract entities — use Qwen3 to pull structured entities
+      // Step 9: Extract entities — use model to pull structured entities
       const entities = await this.extractEntities(chunks, documentId)
       entityCount = entities.length
       this.emitProgress(documentId, 'extract_entities', 9,
         `Extracted ${entityCount} entities`
       )
 
-      // Step 10: Verify entities — use Claude Haiku to verify high-impact entities
+      // Step 10: Verify entities — use Claude Haiku to verify medium-confidence entities
       const verifiedEntities = await this.verifyEntities(entities)
       this.emitProgress(documentId, 'verify_entities', 10,
         `Verified ${verifiedEntities.length} entities`
       )
 
-      // Step 11: Conflict detection — check for contradictions with existing data
+      // Step 11: Conflict detection — check Neo4j if available
       const detected = await this.detectConflicts(verifiedEntities, documentId)
       conflicts.push(...detected)
       this.emitProgress(documentId, 'conflict_detect', 11,
@@ -183,11 +208,11 @@ export class IngestionPipeline {
       await this.storeEpisodicMemory(documentId, userId, clientId, parsed, docType)
       this.emitProgress(documentId, 'episodic_memory', 13, 'Episodic memory created')
 
-      // Step 14: Publish event — notify other systems via Redis pub/sub
+      // Step 14: Publish event — log (Redis pub/sub wired later)
       await this.publishEvent(documentId, userId, clientId, docType, chunkCount, entityCount)
-      this.emitProgress(documentId, 'publish_event', 14, 'Ingestion event published')
+      this.emitProgress(documentId, 'publish_event', 14, 'Ingestion event logged')
 
-      // Step 15: Finalise — mark as indexed
+      // Step 15: Finalise
       this.emitProgress(documentId, 'finalise', 15, 'Ingestion complete')
 
       return {
@@ -224,9 +249,8 @@ export class IngestionPipeline {
     return createHash('sha256').update(content).digest('hex')
   }
 
-  /** Step 5: Classify document type using parser signals and optionally Qwen3 */
+  /** Step 5: Classify document type using parser signals and optionally model */
   private async classifyDocument(parsed: ParsedDocument, filename: string): Promise<DocType> {
-    // Use parser's type signals first
     const topSignal = parsed.typeSignals
       .sort((a, b) => b.confidence - a.confidence)[0]
 
@@ -234,10 +258,9 @@ export class IngestionPipeline {
       return topSignal.docType
     }
 
-    // If not confident enough, use Qwen3 for classification
     try {
       const response = await this.engine.route('classify', {
-        systemPromptKey: 'MICRO_CLASSIFY',
+        systemPromptKey: 'DOC_TYPE_DETECT',
         messages: [{
           role: 'user',
           content: `Classify this document into one type. Reply with just the type name.
@@ -278,20 +301,17 @@ Preview: ${parsed.text.slice(0, 300)}`,
   private chunkDocument(parsed: ParsedDocument): DocumentChunk[] {
     const chunks: DocumentChunk[] = []
     const text = parsed.text
-    const words = text.split(/\s+/)
-    let chunkIndex = 0
 
-    // Target ~500 tokens ≈ ~2000 chars, with overlap
     const charsPerChunk = CHUNK_TARGET_TOKENS * 4
     const overlapChars = CHUNK_OVERLAP_TOKENS * 4
 
+    let chunkIndex = 0
     let position = 0
+
     while (position < text.length) {
-      // Find chunk end, trying to break at sentence boundaries
-      let endPos = Math.min(position + charsPerChunk + CHUNK_MAX_TOKENS * 4 - charsPerChunk, text.length)
+      let endPos = Math.min(position + charsPerChunk + (CHUNK_MAX_TOKENS - CHUNK_TARGET_TOKENS) * 4, text.length)
 
       if (endPos < text.length) {
-        // Look for sentence boundary near target
         const searchStart = Math.max(position + CHUNK_MIN_TOKENS * 4, endPos - 200)
         const searchRegion = text.slice(searchStart, endPos + 200)
         const sentenceEnd = searchRegion.search(/[.!?]\s+/)
@@ -304,7 +324,6 @@ Preview: ${parsed.text.slice(0, 300)}`,
       if (chunkText.length > 0) {
         const tokens = estimateTokens(chunkText)
 
-        // Find which section this chunk belongs to
         const section = parsed.sections.find((s) => {
           const sectionStart = text.indexOf(s.content)
           return sectionStart >= 0 && sectionStart <= position && position < sectionStart + s.content.length
@@ -320,14 +339,12 @@ Preview: ${parsed.text.slice(0, 300)}`,
         })
       }
 
-      // Move position forward with overlap
       position = endPos - overlapChars
-      if (position <= (chunks[chunks.length - 1] ? endPos - charsPerChunk : 0)) {
-        position = endPos // Prevent infinite loop on very small text
+      if (position <= (chunks.length > 0 ? endPos - charsPerChunk : 0)) {
+        position = endPos
       }
     }
 
-    // Handle edge case: empty document
     if (chunks.length === 0 && text.trim().length > 0) {
       chunks.push({
         content: text.trim(),
@@ -340,71 +357,56 @@ Preview: ${parsed.text.slice(0, 300)}`,
     return chunks
   }
 
-  /** Step 7: Generate embeddings via Voyage AI in batches of 50 */
-  private async embedChunks(chunks: DocumentChunk[]): Promise<number[][]> {
-    const embeddings: number[][] = []
-
-    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
-      const batch = chunks.slice(i, i + EMBED_BATCH_SIZE)
-
-      // TODO: Call Voyage AI embedding API
-      // const response = await voyageClient.embed({
-      //   input: batch.map(c => c.content),
-      //   model: 'voyage-3-lite',
-      // })
-      // embeddings.push(...response.data.map(d => d.embedding))
-
-      // Placeholder: generate zero vectors (1536 dimensions to match pgvector schema)
-      for (const _chunk of batch) {
-        embeddings.push(new Array(1536).fill(0))
-      }
-    }
-
-    return embeddings
-  }
-
-  /** Step 8: Store chunks in PostgreSQL with embeddings */
+  /** Step 8: Store chunks in PostgreSQL via Prisma */
   private async storeChunks(
     documentId: string,
-    chunks: DocumentChunk[],
-    _embeddings: number[][]
+    chunks: DocumentChunk[]
   ): Promise<void> {
-    // TODO: Batch insert via Prisma + raw SQL for pgvector embeddings
-    // for (let i = 0; i < chunks.length; i++) {
-    //   await prisma.documentChunk.create({
-    //     data: {
-    //       documentId,
-    //       content: chunks[i].content,
-    //       chunkIndex: chunks[i].chunkIndex,
-    //       tokens: chunks[i].tokens,
-    //       metadata: chunks[i].metadata,
-    //     },
-    //   })
-    //   // Raw SQL for embedding: UPDATE "DocumentChunk" SET embedding = $1 WHERE id = $2
-    // }
-    void documentId
-    void chunks
+    // Delete any existing chunks for this document (re-ingestion)
+    await this.prisma.documentChunk.deleteMany({
+      where: { documentId },
+    })
+
+    // Batch insert chunks via Prisma
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!
+      await this.prisma.documentChunk.create({
+        data: {
+          documentId,
+          content: chunk.content,
+          chunkIndex: chunk.chunkIndex,
+          tokens: chunk.tokens,
+          metadata: JSON.parse(JSON.stringify(chunk.metadata)),
+        },
+      })
+
+      // TODO: When Voyage AI embeddings are real, store via raw SQL:
+      // await this.prisma.$executeRaw`
+      //   UPDATE "DocumentChunk" SET embedding = ${embeddings[i]}::vector
+      //   WHERE id = ${chunkId}
+      // `
+    }
   }
 
-  /** Step 9: Extract entities from chunks using Qwen3 */
+  /** Step 9: Extract entities from chunks using model */
   private async extractEntities(
     chunks: DocumentChunk[],
-    documentId: string
+    _documentId: string
   ): Promise<ExtractedEntity[]> {
     const entities: ExtractedEntity[] = []
-
-    // Process chunks in groups to stay within token limits
-    const chunkGroups = this.groupChunks(chunks, 5)
+    // Limit to first 3 chunk groups to avoid excessive API calls
+    const limitedChunks = chunks.slice(0, 15)
+    const chunkGroups = this.groupChunks(limitedChunks, 5)
 
     for (const group of chunkGroups) {
       const combinedText = group.map((c) => c.content).join('\n\n')
 
       try {
-        const response = await this.engine.route('agent_response', {
-          systemPromptKey: 'MICRO_EXTRACT',
+        const response = await this.engine.route('entity_extract', {
+          systemPromptKey: 'ENTITY_EXTRACT_RAW',
           messages: [{
             role: 'user',
-            content: `Extract named entities from this text. Return JSON array of objects with: name, type (CLIENT|COMPETITOR|TECHNOLOGY|PERSON|PROCESS|INDUSTRY|CONCEPT), properties (key-value pairs), confidence (0-1).
+            content: `Extract named entities from this text. Return a JSON array of objects with: name, type (CLIENT|COMPETITOR|TECHNOLOGY|PERSON|PROCESS|INDUSTRY|CONCEPT), properties (key-value pairs), confidence (0-1).
 
 Text:
 ${combinedText.slice(0, 3000)}`,
@@ -436,12 +438,11 @@ ${combinedText.slice(0, 3000)}`,
             })
           }
         }
-      } catch {
-        // Entity extraction failed for this group — continue with others
+      } catch (err) {
+        console.warn(`[Pipeline] Entity extraction failed for chunk group: ${err instanceof Error ? err.message : 'Unknown'}`)
       }
     }
 
-    void documentId
     return entities
   }
 
@@ -449,9 +450,6 @@ ${combinedText.slice(0, 3000)}`,
   private async verifyEntities(
     entities: ExtractedEntity[]
   ): Promise<ExtractedEntity[]> {
-    // Only verify entities with medium confidence (0.4–0.8)
-    // High confidence (>0.8) entities are accepted as-is
-    // Low confidence (<0.4) entities are dropped
     const verified: ExtractedEntity[] = []
 
     for (const entity of entities) {
@@ -463,10 +461,9 @@ ${combinedText.slice(0, 3000)}`,
         continue
       }
 
-      // Use Claude Haiku for verification
       try {
         const response = await this.engine.route('entity_verify', {
-          systemPromptKey: 'MICRO_VERIFY',
+          systemPromptKey: 'ENTITY_VERIFY',
           messages: [{
             role: 'user',
             content: `Is this a valid entity? Reply YES or NO.
@@ -488,7 +485,6 @@ Properties: ${JSON.stringify(entity.properties)}`,
           verified.push({ ...entity, confidence: Math.min(entity.confidence + 0.2, 1.0) })
         }
       } catch {
-        // Verification failed — include with original confidence
         verified.push(entity)
       }
     }
@@ -499,28 +495,51 @@ Properties: ${JSON.stringify(entity.properties)}`,
   /** Step 11: Detect conflicts with existing graph data */
   private async detectConflicts(
     entities: ExtractedEntity[],
-    documentId: string
+    _documentId: string
   ): Promise<ConflictDetected[]> {
     const conflicts: ConflictDetected[] = []
 
-    // TODO: For each entity, query Neo4j knowledge graph for existing entries
-    // Compare properties and flag contradictions
-    // Example: entity says "Acme has 200 employees" but graph says 150
-    //
-    // for (const entity of entities) {
-    //   const existing = await graphOps.findByName(entity.name, entity.type)
-    //   if (existing) {
-    //     for (const [key, newValue] of Object.entries(entity.properties)) {
-    //       const existingValue = existing.properties[key]
-    //       if (existingValue && existingValue !== newValue) {
-    //         conflicts.push({ ... })
-    //       }
-    //     }
-    //   }
-    // }
+    try {
+      const { Neo4jClient, GraphOperations } = await import('@axis/knowledge-graph')
+      const neo4jClient = new Neo4jClient()
 
-    void entities
-    void documentId
+      if (!neo4jClient.isAvailable()) {
+        console.warn('[Pipeline] Neo4j unavailable — skipping conflict detection')
+        return conflicts
+      }
+
+      const graphOps = new GraphOperations(neo4jClient)
+
+      for (const entity of entities) {
+        try {
+          const existing = await graphOps.findRelated(entity.name, 1)
+          if (!existing) continue
+
+          // Compare properties for contradictions
+          // GraphNode types have specific typed fields, cast to record for comparison
+          const existingRecord = existing.node as unknown as Record<string, unknown>
+          for (const [key, newValue] of Object.entries(entity.properties)) {
+            const existingValue = existingRecord[key]
+            if (existingValue !== undefined && existingValue !== null && String(existingValue) !== String(newValue)) {
+              conflicts.push({
+                entityName: entity.name,
+                entityType: entity.type,
+                property: key,
+                existingValue: String(existingValue),
+                newValue: String(newValue),
+                existingSourceDocId: 'graph',
+                newSourceDocId: _documentId,
+              })
+            }
+          }
+        } catch {
+          // Individual entity check failed — continue
+        }
+      }
+    } catch {
+      console.warn('[Pipeline] Neo4j import failed — skipping conflict detection')
+    }
+
     return conflicts
   }
 
@@ -541,14 +560,35 @@ Properties: ${JSON.stringify(entity.properties)}`,
       entityCount: number
     }
   ): Promise<void> {
-    // TODO: Upsert KnowledgeDocument via Prisma
-    // await prisma.knowledgeDocument.upsert({
-    //   where: { id: documentId },
-    //   create: { id: documentId, ...data, syncStatus: 'INDEXED' },
-    //   update: { ...data, syncStatus: 'INDEXED', lastSynced: new Date() },
-    // })
-    void documentId
-    void data
+    await this.prisma.knowledgeDocument.upsert({
+      where: { id: documentId },
+      create: {
+        id: documentId,
+        userId: data.userId,
+        ...(data.clientId ? { clientId: data.clientId } : {}),
+        title: data.title,
+        sourceType: data.sourceType as 'GDRIVE' | 'UPLOAD' | 'WEB' | 'MANUAL',
+        sourcePath: data.sourcePath,
+        sourceId: data.sourceId,
+        mimeType: data.mimeType,
+        docType: data.docType,
+        checksum: data.checksum,
+        syncStatus: 'INDEXED',
+        chunkCount: data.chunkCount,
+        entityCount: data.entityCount,
+        lastSynced: new Date(),
+      },
+      update: {
+        ...(data.clientId ? { clientId: data.clientId } : {}),
+        title: data.title,
+        docType: data.docType,
+        checksum: data.checksum,
+        syncStatus: 'INDEXED',
+        chunkCount: data.chunkCount,
+        entityCount: data.entityCount,
+        lastSynced: new Date(),
+      },
+    })
   }
 
   /** Step 13: Store episodic memory for agent context */
@@ -559,24 +599,18 @@ Properties: ${JSON.stringify(entity.properties)}`,
     parsed: ParsedDocument,
     docType: DocType
   ): Promise<void> {
-    // TODO: Create AgentMemory record
-    // await prisma.agentMemory.create({
-    //   data: {
-    //     userId,
-    //     clientId,
-    //     memoryType: 'EPISODIC',
-    //     content: `Ingested ${docType} document: "${parsed.metadata.title}" (${parsed.metadata.wordCount} words)`,
-    //     tags: [docType, parsed.metadata.title],
-    //   },
-    // })
-    void documentId
-    void userId
-    void clientId
-    void parsed
-    void docType
+    await this.prisma.agentMemory.create({
+      data: {
+        userId,
+        ...(clientId ? { clientId } : {}),
+        memoryType: 'EPISODIC',
+        content: `Ingested ${docType} document: "${parsed.metadata.title}" (${parsed.metadata.wordCount} words, ${documentId}). Key topics: ${parsed.sections.slice(0, 5).map((s) => s.title).filter(Boolean).join(', ') || 'untitled sections'}.`,
+        tags: [docType, parsed.metadata.title, documentId],
+      },
+    })
   }
 
-  /** Step 14: Publish ingestion event via Redis pub/sub */
+  /** Step 14: Publish ingestion event (log for now, Redis pub/sub later) */
   private async publishEvent(
     documentId: string,
     userId: string,
@@ -585,17 +619,14 @@ Properties: ${JSON.stringify(entity.properties)}`,
     chunkCount: number,
     entityCount: number
   ): Promise<void> {
-    // TODO: Publish to Redis channel 'axis:ingestion:complete'
+    // Log the event (Redis pub/sub will be wired when we add real-time updates)
+    console.log(`[Pipeline] Event: document_ingested | doc=${documentId} user=${userId} client=${clientId ?? 'none'} type=${docType} chunks=${chunkCount} entities=${entityCount}`)
+
+    // TODO: Wire Redis pub/sub
     // await redis.publish('axis:ingestion:complete', JSON.stringify({
     //   documentId, userId, clientId, docType, chunkCount, entityCount,
     //   timestamp: new Date().toISOString(),
     // }))
-    void documentId
-    void userId
-    void clientId
-    void docType
-    void chunkCount
-    void entityCount
   }
 
   // ─── Helpers ────────────────────────────────────────────────────

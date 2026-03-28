@@ -49,8 +49,14 @@ export class WebhookHandler {
   // TODO: Google Drive API client
   // private driveClient: drive_v3.Drive
 
-  constructor() {
-    this.pipeline = new IngestionPipeline()
+  constructor(options?: { prisma?: import('@prisma/client').PrismaClient }) {
+    if (options?.prisma) {
+      this.pipeline = new IngestionPipeline({ prisma: options.prisma })
+    } else {
+      // WebhookHandler may be instantiated without Prisma at import time
+      // Pipeline will throw if actually called without it
+      this.pipeline = null as unknown as IngestionPipeline
+    }
   }
 
   /**

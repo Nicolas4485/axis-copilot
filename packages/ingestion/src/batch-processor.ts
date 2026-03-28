@@ -36,10 +36,17 @@ export class BatchProcessor {
   // private queue: Queue
   // private worker: Worker
 
-  constructor() {
-    this.pipeline = new IngestionPipeline(undefined, (event) => {
-      this.publishProgress(event)
-    })
+  constructor(options?: { prisma?: import('@prisma/client').PrismaClient }) {
+    if (options?.prisma) {
+      this.pipeline = new IngestionPipeline({
+        prisma: options.prisma,
+        onProgress: (event: IngestionProgress) => {
+          this.publishProgress(event)
+        },
+      })
+    } else {
+      this.pipeline = null as unknown as IngestionPipeline
+    }
 
     // TODO: Initialise BullMQ queue and worker
     // this.queue = new Queue('axis:ingestion', {

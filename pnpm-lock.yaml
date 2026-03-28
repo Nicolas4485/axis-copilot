@@ -207,9 +207,15 @@ importers:
       '@axis/inference':
         specifier: workspace:*
         version: link:../inference
+      '@axis/knowledge-graph':
+        specifier: workspace:*
+        version: link:../knowledge-graph
       '@axis/types':
         specifier: workspace:*
         version: link:../types
+      '@prisma/client':
+        specifier: ^5.14.0
+        version: 5.22.0(prisma@5.22.0)
       mammoth:
         specifier: ^1.8.0
         version: 1.12.0

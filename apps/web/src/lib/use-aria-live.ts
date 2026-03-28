@@ -91,6 +91,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             model: `models/${config.model}`,
             generationConfig: {
               responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: 'Aoede' },
+                },
+              },
             },
             systemInstruction: {
               parts: [{ text: config.systemInstruction }],

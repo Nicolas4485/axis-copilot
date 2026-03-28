@@ -11,6 +11,7 @@ import { knowledgeRouter } from './routes/knowledge.js'
 import { exportsRouter } from './routes/exports.js'
 import { costRouter } from './routes/cost.js'
 import { ariaRouter } from './routes/aria.js'
+import { syncRouter } from './routes/sync.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
 
@@ -42,6 +43,7 @@ app.use('/api/knowledge', knowledgeRouter)
 app.use('/api/exports', exportsRouter)
 app.use('/api/cost', costRouter)
 app.use('/api/aria', ariaRouter)
+app.use('/api/sync', syncRouter)
 
 // ─── 404 fallthrough ───────────────────────────────────────────────────────────
 app.use((_req, res) => {

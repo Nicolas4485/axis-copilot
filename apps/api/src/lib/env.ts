@@ -31,6 +31,9 @@ const envSchema = z.object({
 
   // Gemini — optional (Aria uses Gemini 2.0 Flash Live for voice/video)
   GEMINI_API_KEY: z.string().optional().default(''),
+
+  // GitHub — optional (enables private repo sync + higher rate limits)
+  GITHUB_TOKEN: z.string().optional().default(''),
 })
 
 export type Env = z.infer<typeof envSchema>

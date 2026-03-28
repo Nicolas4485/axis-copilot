@@ -28,6 +28,7 @@ export { GSlidesParser } from './parsers/gslides-parser.js'
 export { PdfParser } from './parsers/pdf-parser.js'
 export { TranscriptParser } from './parsers/transcript-parser.js'
 export { DocxParser } from './parsers/docx-parser.js'
+export { CodeParser, codeFileMimeType } from './parsers/code-parser.js'
 
 // Pipeline
 export { IngestionPipeline } from './pipeline.js'

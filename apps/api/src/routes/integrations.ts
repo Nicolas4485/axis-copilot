@@ -6,7 +6,8 @@ import { googleConnectSchema } from '../lib/schemas.js'
 import { getAuthUrl, exchangeCode, encryptTokens } from '@axis/tools/src/google/auth.js'
 import { WebhookHandler } from '@axis/ingestion'
 
-const webhookHandler = new WebhookHandler()
+import { prisma as prismaClient } from '../lib/prisma.js'
+const webhookHandler = new WebhookHandler({ prisma: prismaClient })
 
 export const integrationsRouter = Router()
 
