@@ -133,8 +133,15 @@ export function decryptTokens(encrypted: EncryptedTokens): GoogleTokens {
 
 /**
  * Get a valid access token, refreshing if expired.
+ *
+ * @param encrypted  - The encrypted token pair from the database.
+ * @param onRefresh  - Optional callback invoked with the new encrypted tokens
+ *                     after a successful refresh so the caller can persist them.
  */
-export async function getValidToken(encrypted: EncryptedTokens): Promise<string> {
+export async function getValidToken(
+  encrypted: EncryptedTokens,
+  onRefresh?: (updated: EncryptedTokens) => Promise<void>
+): Promise<string> {
   const tokens = decryptTokens(encrypted)
 
   // Refresh 5 minutes before expiry
@@ -144,13 +151,15 @@ export async function getValidToken(encrypted: EncryptedTokens): Promise<string>
   }
 
   const refreshed = await refreshAccessToken(tokens.refreshToken)
-  // TODO: Update stored token in database
-  // await prisma.integration.update({
-  //   where: { ... },
-  //   data: {
-  //     accessToken: encrypt(refreshed.accessToken),
-  //     expiresAt: refreshed.expiresAt,
-  //   },
-  // })
+
+  if (onRefresh) {
+    const updated: EncryptedTokens = {
+      accessToken: encrypt(refreshed.accessToken),
+      refreshToken: encrypted.refreshToken, // refresh token unchanged
+      expiresAt: refreshed.expiresAt,
+    }
+    await onRefresh(updated)
+  }
+
   return refreshed.accessToken
 }

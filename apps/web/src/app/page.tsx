@@ -4,14 +4,11 @@ import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { health, type HealthStatus } from '@/lib/api'
 import { HealthIndicator } from '@/components/health-indicator'
-import { Plus, MessageSquare, Users, Clock, ArrowRight } from 'lucide-react'
+import { Plus, MessageSquare, Users, Clock, ArrowRight, Mic } from 'lucide-react'
 
-const MODES = [
-  { id: 'intake', label: 'Client Intake', desc: 'Discover needs and context' },
-  { id: 'product', label: 'Product Review', desc: 'Critique and prioritise' },
-  { id: 'process', label: 'Process Analysis', desc: 'Map and automate' },
-  { id: 'competitive', label: 'Competitive Intel', desc: 'Research and position' },
-  { id: 'stakeholder', label: 'Stakeholder Map', desc: 'Influence and communicate' },
+const START_OPTIONS = [
+  { id: 'text', label: 'Chat with Aria', desc: 'Text-based conversation', icon: MessageSquare, href: '/session/new' },
+  { id: 'live', label: 'Talk to Aria', desc: 'Voice, camera, screen share', icon: Mic, href: '/session/new?live=true' },
 ] as const
 
 export default function Dashboard() {
@@ -34,22 +31,25 @@ export default function Dashboard() {
 
       {/* Quick Start */}
       <section>
-        <h2 className="font-serif text-lg mb-3">Quick Start</h2>
-        <div className="grid grid-cols-5 gap-3">
-          {MODES.map((mode) => (
+        <h2 className="font-serif text-lg mb-3">Talk to Aria</h2>
+        <div className="grid grid-cols-2 gap-4 max-w-lg">
+          {START_OPTIONS.map((opt) => (
             <Link
-              key={mode.id}
-              href={`/session/new?mode=${mode.id}`}
+              key={opt.id}
+              href={opt.href}
               className="card hover:border-[var(--gold)]/30 transition-colors group"
             >
               <div className="flex items-center gap-2 mb-2">
-                <Plus size={14} className="text-[var(--gold)] opacity-0 group-hover:opacity-100 transition-opacity" />
-                <span className="text-sm font-medium">{mode.label}</span>
+                <opt.icon size={16} className="text-[var(--gold)]" />
+                <span className="text-sm font-medium">{opt.label}</span>
               </div>
-              <p className="text-xs text-[var(--text-muted)]">{mode.desc}</p>
+              <p className="text-xs text-[var(--text-muted)]">{opt.desc}</p>
             </Link>
           ))}
         </div>
+        <p className="text-xs text-[var(--text-muted)] mt-3">
+          Aria routes your requests to specialist agents (Product, Process, Competitive, Stakeholder) automatically.
+        </p>
       </section>
 
       {/* Recent Sessions + Clients */}

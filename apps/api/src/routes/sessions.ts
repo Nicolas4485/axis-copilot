@@ -86,9 +86,16 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
   const { content, mode, imageBase64 } = parsed.data
 
   // Verify session exists and belongs to user
-  const session = await prisma.session.findFirst({
-    where: { id: sessionId, userId: req.userId! },
-  })
+  let session
+  try {
+    session = await prisma.session.findFirst({
+      where: { id: sessionId, userId: req.userId! },
+    })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Database error', code: 'DB_ERROR', details: errorMsg, requestId: req.requestId })
+    return
+  }
 
   if (!session) {
     res.status(404).json({ error: 'Session not found', code: 'NOT_FOUND', requestId: req.requestId })
@@ -96,9 +103,15 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
   }
 
   // Store user message
-  await prisma.message.create({
-    data: { sessionId, role: 'USER', content, mode: mode ?? session.mode ?? 'intake', metadata: {} },
-  })
+  try {
+    await prisma.message.create({
+      data: { sessionId, role: 'USER', content, mode: mode ?? session.mode ?? 'intake', metadata: {} },
+    })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to store message', code: 'MESSAGE_STORE_ERROR', details: errorMsg, requestId: req.requestId })
+    return
+  }
 
   // Set up SSE
   res.writeHead(200, {
@@ -113,7 +126,7 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
 
   const sendEvent = (type: string, data: unknown): void => {
     if (closed) return
-    res.write(`data: ${JSON.stringify({ type, ...data as Record<string, unknown> })}\n\n`)
+    res.write(`data: ${JSON.stringify({ ...(data as Record<string, unknown>), type })}\n\n`)
   }
 
   try {

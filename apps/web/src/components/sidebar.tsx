@@ -2,16 +2,27 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, MessageSquare, Users, Settings } from 'lucide-react'
+import { LayoutDashboard, MessageSquare, Users, Settings, Network, BarChart2, FileText } from 'lucide-react'
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '#sessions', label: 'Sessions', icon: MessageSquare },
-  { href: '#clients', label: 'Clients', icon: Users },
+  { href: '/session/new', label: 'New Session', icon: MessageSquare },
+  { href: '/knowledge', label: 'Knowledge', icon: Network },
+  { href: '/analytics', label: 'Analytics', icon: BarChart2 },
+] as const
+
+const CLIENT_ITEMS = [
+  { href: '/clients', label: 'Clients', icon: Users },
 ] as const
 
 export function Sidebar() {
   const pathname = usePathname()
+
+  const isActive = (href: string) => {
+    if (href === '/') return pathname === '/'
+    if (href === '/session/new') return pathname.startsWith('/session')
+    return pathname.startsWith(href)
+  }
 
   return (
     <aside className="w-56 h-screen flex flex-col bg-[var(--bg-secondary)] border-r border-[var(--border)] shrink-0">
@@ -24,34 +35,84 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
+        <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider px-3 py-1.5">
+          Workspace
+        </p>
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
-          const isActive = pathname === item.href ||
-            (item.href !== '/' && pathname.startsWith(item.href.replace('#', '/')))
+          const active = isActive(item.href)
           return (
             <Link
               key={item.href}
-              href={item.href === '#sessions' ? '/' : item.href === '#clients' ? '/' : item.href}
+              href={item.href}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                isActive
+                active
                   ? 'bg-[var(--gold)]/10 text-[var(--gold)]'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
               }`}
             >
-              <Icon size={18} />
+              <Icon size={16} />
               {item.label}
             </Link>
           )
         })}
+
+        <div className="pt-3">
+          <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider px-3 py-1.5">
+            Clients
+          </p>
+          {CLIENT_ITEMS.map((item) => {
+            const Icon = item.icon
+            const active = isActive(item.href)
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  active
+                    ? 'bg-[var(--gold)]/10 text-[var(--gold)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                }`}
+              >
+                <Icon size={16} />
+                {item.label}
+              </Link>
+            )
+          })}
+        </div>
+
+        <div className="pt-3">
+          <p className="text-xs text-[var(--text-muted)] uppercase tracking-wider px-3 py-1.5">
+            Content
+          </p>
+          <Link
+            href="/knowledge?tab=documents"
+            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              pathname === '/knowledge'
+                ? 'bg-[var(--gold)]/10 text-[var(--gold)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+            }`}
+          >
+            <FileText size={16} />
+            Documents
+          </Link>
+        </div>
       </nav>
 
-      {/* Footer */}
+      {/* Footer — Settings */}
       <div className="p-3 border-t border-[var(--border)]">
-        <button className="flex items-center gap-3 px-3 py-2 w-full rounded-lg text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors">
-          <Settings size={18} />
+        <Link
+          href="/settings"
+          className={`flex items-center gap-3 px-3 py-2 w-full rounded-lg text-sm transition-colors ${
+            pathname.startsWith('/settings')
+              ? 'bg-[var(--gold)]/10 text-[var(--gold)]'
+              : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+          }`}
+        >
+          <Settings size={16} />
           Settings
-        </button>
+        </Link>
       </div>
     </aside>
   )

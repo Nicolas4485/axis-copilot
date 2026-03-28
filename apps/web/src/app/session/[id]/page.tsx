@@ -3,20 +3,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { sessions, streamMessage, type SSEEvent, type Message } from '@/lib/api'
+import { sessions, streamAriaMessage, type SSEEvent, type Message } from '@/lib/api'
 import { VoiceInput } from '@/components/voice-input'
+import { AriaLivePanel } from '@/components/aria/aria-live-panel'
 import {
   Send, Upload, ChevronDown, ChevronRight, DollarSign,
   Wrench, FileText, AlertTriangle, Image as ImageIcon, X,
+  Mic, MessageSquare,
 } from 'lucide-react'
-
-const MODE_LABELS: Record<string, string> = {
-  intake: 'Intake',
-  product: 'Product',
-  process: 'Process',
-  competitive: 'Competitive',
-  stakeholder: 'Stakeholder',
-}
 
 export default function SessionPage() {
   const { id: paramId } = useParams<{ id: string }>()
@@ -32,6 +26,7 @@ export default function SessionPage() {
   const [showSources, setShowSources] = useState(false)
   const [imageBase64, setImageBase64] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [liveMode, setLiveMode] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -78,10 +73,10 @@ export default function SessionPage() {
       }
     }
 
-    const controller = streamMessage(
+    const controller = streamAriaMessage(
       activeSessionId,
       input.trim(),
-      { mode, ...(imageBase64 ? { imageBase64 } : {}) },
+      { ...(imageBase64 ? { imageBase64 } : {}) },
       (event: SSEEvent) => {
         switch (event.type) {
           case 'tool_start':
@@ -164,18 +159,22 @@ export default function SessionPage() {
           )}
         </div>
         <div className="flex items-center gap-4">
-          {/* Mode Switcher */}
+          {/* Live/Text Mode Toggle */}
           <div className="flex gap-1 bg-[var(--bg-tertiary)] rounded-lg p-0.5">
-            {Object.entries(MODE_LABELS).map(([key, label]) => (
+            {[
+              { key: 'text', label: 'Text', icon: MessageSquare },
+              { key: 'live', label: 'Live', icon: Mic },
+            ].map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
-                onClick={() => setMode(key)}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                  mode === key
+                onClick={() => setLiveMode(key === 'live')}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-1 ${
+                  (key === 'live' ? liveMode : !liveMode)
                     ? 'bg-[var(--gold)] text-[var(--bg-primary)]'
                     : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
                 }`}
               >
+                <Icon className="w-3 h-3" />
                 {label}
               </button>
             ))}
@@ -190,14 +189,20 @@ export default function SessionPage() {
         </div>
       </header>
 
-      {/* Messages */}
+      {/* Live Mode — Aria Live Panel */}
+      {liveMode && sessionId && (
+        <AriaLivePanel sessionId={sessionId} />
+      )}
+
+      {/* Text Mode — Chat Messages */}
+      {!liveMode && (<>
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {allMessages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
-            <h2 className="font-serif text-2xl text-[var(--gold)] mb-2">Start a Conversation</h2>
+            <h2 className="font-serif text-2xl text-[var(--gold)] mb-2">Talk to Aria</h2>
             <p className="text-sm text-[var(--text-muted)] max-w-md">
               Describe your client, share a document, or ask a question.
-              AXIS will route to the right specialist.
+              Aria will brainstorm with you and delegate to specialist agents when needed.
             </p>
           </div>
         )}
@@ -318,7 +323,7 @@ export default function SessionPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask AXIS anything..."
+            placeholder="Ask Aria anything..."
             rows={1}
             className="input flex-1 resize-none min-h-[40px] max-h-32"
             disabled={streaming}
@@ -335,6 +340,7 @@ export default function SessionPage() {
           </button>
         </div>
       </div>
+      </>)}
     </div>
   )
 }

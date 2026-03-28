@@ -20,6 +20,7 @@ export { PROMPT_TIER_LIMITS } from './types.js'
 // Clients (for testing / direct use only — agents must use InferenceEngine)
 export { LocalClient } from './local-client.js'
 export { ClaudeClient } from './claude-client.js'
+export { GeminiClient } from './gemini-client.js'
 
 // Router
 export { getRoute, isLocalTask, hasFallback, getFallback } from './router.js'

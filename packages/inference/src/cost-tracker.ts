@@ -141,7 +141,8 @@ export class CostTracker {
       if (!byModel[modelKey]) {
         byModel[modelKey] = { model: modelKey, calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 }
       }
-      const m = byModel[modelKey]
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const m = byModel[modelKey]!
       m.calls++
       m.costUsd += entry.costUsd
       m.inputTokens += entry.inputTokens
@@ -152,7 +153,8 @@ export class CostTracker {
       if (!byTask[taskKey]) {
         byTask[taskKey] = { task: taskKey, calls: 0, costUsd: 0, averageLatencyMs: 0 }
       }
-      const t = byTask[taskKey]
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const t = byTask[taskKey]!
       t.calls++
       t.costUsd += entry.costUsd
       t.averageLatencyMs = (t.averageLatencyMs * (t.calls - 1) + entry.latencyMs) / t.calls
@@ -197,7 +199,8 @@ export class CostTracker {
       if (!byModel[modelKey]) {
         byModel[modelKey] = { model: modelKey, calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 }
       }
-      const m = byModel[modelKey]
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const m = byModel[modelKey]!
       m.calls++
       m.costUsd += entry.costUsd
       m.inputTokens += entry.inputTokens
@@ -207,7 +210,8 @@ export class CostTracker {
       if (!byDayMap[day]) {
         byDayMap[day] = { costUsd: 0, calls: 0 }
       }
-      const d = byDayMap[day]
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const d = byDayMap[day]!
       d.costUsd += entry.costUsd
       d.calls++
     }

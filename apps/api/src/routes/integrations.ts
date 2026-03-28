@@ -1,8 +1,8 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
+import { authenticate } from '../middleware/auth.js'
 import { googleConnectSchema } from '../lib/schemas.js'
-import { encrypt } from '@axis/types'
 import { getAuthUrl, exchangeCode, encryptTokens } from '@axis/tools/src/google/auth.js'
 import { WebhookHandler } from '@axis/ingestion'
 
@@ -14,7 +14,7 @@ export const integrationsRouter = Router()
  * POST /api/integrations/google/connect — Start OAuth flow
  * Returns the Google consent URL.
  */
-integrationsRouter.post('/google/connect', async (req: Request, res: Response) => {
+integrationsRouter.post('/google/connect', authenticate, async (req: Request, res: Response) => {
   try {
     const parsed = googleConnectSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -86,8 +86,6 @@ integrationsRouter.get('/google/callback', async (req: Request, res: Response) =
       },
     })
 
-    void encrypt // ensure import isn't tree-shaken
-
     res.json({ success: true, provider: stateData.provider, message: 'Google integration connected' })
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
@@ -128,7 +126,7 @@ integrationsRouter.post('/google/drive-webhook', async (req: Request, res: Respo
 /**
  * GET /api/integrations/google/sync-status — Check sync status for user's Drive
  */
-integrationsRouter.get('/google/sync-status', async (req: Request, res: Response) => {
+integrationsRouter.get('/google/sync-status', authenticate, async (req: Request, res: Response) => {
   try {
     const integrations = await prisma.integration.findMany({
       where: { userId: req.userId! },

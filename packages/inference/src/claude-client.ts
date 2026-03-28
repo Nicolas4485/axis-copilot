@@ -39,14 +39,14 @@ const DEFAULT_MAX_TOKENS = 2048
  * Sonnet: user-facing output, emails, reports
  */
 export class ClaudeClient {
-  private client: Anthropic
+  private client: Anthropic | null
   private onCostEntry?: ((entry: CostEntry) => void) | undefined
 
   constructor(onCostEntry?: (entry: CostEntry) => void) {
     const apiKey = process.env['ANTHROPIC_API_KEY']
     if (!apiKey) {
       // Defer the error to when a call is actually made — allows local-only mode
-      this.client = null as unknown as Anthropic
+      this.client = null
       this.onCostEntry = onCostEntry
       return
     }

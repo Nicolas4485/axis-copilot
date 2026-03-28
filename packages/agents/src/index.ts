@@ -28,6 +28,10 @@ export { BaseAgent } from './base-agent.js'
 export { ToolRegistry } from './tool-registry.js'
 export { Orchestrator } from './orchestrator.js'
 
+// Aria — conversational orchestrator (replaces Orchestrator + IntakeAgent)
+export { Aria } from './aria.js'
+export type { AriaResponse, LiveSessionConfig } from './aria.js'
+
 // Specialist agents
 export { IntakeAgent } from './specialists/intake-agent.js'
 export { ProductAgent } from './specialists/product-agent.js'

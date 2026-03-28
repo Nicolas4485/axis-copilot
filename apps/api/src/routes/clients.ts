@@ -6,6 +6,22 @@ import { createClientSchema, updateClientSchema, createStakeholderSchema } from 
 export const clientsRouter = Router()
 
 /**
+ * GET /api/clients — List all clients for the authenticated user
+ */
+clientsRouter.get('/', async (req: Request, res: Response) => {
+  try {
+    const clients = await prisma.client.findMany({
+      where: { userId: req.userId! },
+      orderBy: { createdAt: 'desc' },
+    })
+    res.json({ clients, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to list clients', code: 'CLIENT_LIST_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
  * POST /api/clients — Create a new client
  */
 clientsRouter.post('/', async (req: Request, res: Response) => {
