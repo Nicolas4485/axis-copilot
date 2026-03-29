@@ -56,15 +56,15 @@ export interface AssembledContext {
 }
 
 const TIER_BUDGETS = {
-  WORKING: 2000,
-  SUMMARY: 1000,
-  EPISODIC: 1500,
-  SEMANTIC: 1000,
-  ARCHIVAL: 500,
+  WORKING: 10000,   // Last 50 messages — enough for deep brainstorming
+  SUMMARY: 2000,    // Cross-session context
+  EPISODIC: 2000,   // Past interactions
+  SEMANTIC: 1000,   // Graph context
+  ARCHIVAL: 500,    // Referenced archives
 } as const
 
-const TOTAL_BUDGET = 6000
-const WORKING_MEMORY_MAX_MESSAGES = 10
+const TOTAL_BUDGET = 15000
+const WORKING_MEMORY_MAX_MESSAGES = 50
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
