@@ -1,4 +1,4 @@
-// schedule_aria_meeting — Creates a calendar invite when Aria is blocked on user input
+// schedule_aria_meeting — Creates a Google Calendar event when Aria needs user input
 // Used by: Aria (when she or a worker agent needs a decision from the user)
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
@@ -30,37 +30,66 @@ export async function scheduleAriaMeeting(
     return { success: false, data: null, error: 'topic and context are required', durationMs: Date.now() - start }
   }
 
+  const delayMinutes = urgency === 'high' ? 15 : urgency === 'medium' ? 60 : 240
+  const startTime = new Date(Date.now() + delayMinutes * 60 * 1000)
+
   try {
-    // Determine start time based on urgency
-    const delayMinutes = urgency === 'high' ? 15 : urgency === 'medium' ? 60 : 240
-    const startTime = new Date(Date.now() + delayMinutes * 60 * 1000)
+    // Get Google OAuth token from database
+    const { PrismaClient } = await import('@prisma/client')
+    const prisma = new PrismaClient()
 
-    // Try to create Google Calendar event
-    // This requires the user to have Google OAuth connected
     try {
+      const integration = await prisma.integration.findFirst({
+        where: {
+          userId: context.userId,
+          provider: { in: ['GMAIL', 'GOOGLE_DRIVE', 'GOOGLE_DOCS', 'GOOGLE_SHEETS'] },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      if (!integration) {
+        return {
+          success: true,
+          data: {
+            topic, urgency, scheduledFor: startTime.toISOString(),
+            sessionLink: `/session/${context.sessionId}?live=true`,
+            message: `Meeting request logged but Google not connected. Topic: "${topic}".`,
+            calendarConnected: false,
+          },
+          durationMs: Date.now() - start,
+        }
+      }
+
+      // Decrypt and get valid token
+      const { getValidToken } = await import('./google/auth.js')
+      const accessToken = await getValidToken(
+        {
+          accessToken: integration.accessToken,
+          refreshToken: integration.refreshToken ?? '',
+          expiresAt: integration.expiresAt ?? new Date(0),
+        },
+        async (updated) => {
+          await prisma.integration.update({
+            where: { id: integration.id },
+            data: {
+              accessToken: updated.accessToken,
+              refreshToken: updated.refreshToken,
+              expiresAt: updated.expiresAt,
+            },
+          })
+        }
+      )
+
+      // Create the calendar event
       const { createAriaEvent } = await import('./google/calendar.js')
+      const event = await createAriaEvent(accessToken, {
+        topic,
+        context: meetingContext,
+        sessionId: context.sessionId,
+        startTime,
+      })
 
-      // Get access token from database
-      // TODO: Wire Prisma to look up the user's Google integration
-      // For now, attempt the calendar API call
-      // const integration = await prisma.integration.findFirst({
-      //   where: { userId: context.userId, provider: { in: ['GOOGLE_DRIVE', 'GOOGLE_DOCS'] } }
-      // })
-
-      // Placeholder: log the meeting request
-      console.log(`[ScheduleAriaMeeting] Would create event: "${topic}" at ${startTime.toISOString()}`)
-      console.log(`[ScheduleAriaMeeting] Context: ${meetingContext.slice(0, 200)}`)
-      console.log(`[ScheduleAriaMeeting] Session link: /session/${context.sessionId}?live=true`)
-
-      // If we had the access token, we'd call:
-      // const event = await createAriaEvent(accessToken, {
-      //   topic,
-      //   context: meetingContext,
-      //   sessionId: context.sessionId,
-      //   startTime,
-      // })
-
-      void createAriaEvent // reference to avoid unused import warning
+      console.log(`[ScheduleAriaMeeting] Created event: ${event.id} — ${event.htmlLink}`)
 
       return {
         success: true,
@@ -69,31 +98,28 @@ export async function scheduleAriaMeeting(
           urgency,
           scheduledFor: startTime.toISOString(),
           sessionLink: `/session/${context.sessionId}?live=true`,
-          message: `Meeting scheduled: "${topic}" at ${startTime.toLocaleTimeString()}. The user will receive a calendar notification with a link to join a live session.`,
-          calendarConnected: false, // Will be true once Google OAuth is wired
+          calendarEventId: event.id,
+          calendarLink: event.htmlLink,
+          message: `Meeting "${topic}" scheduled for ${startTime.toLocaleTimeString()}. Calendar event created with a link to your AXIS live session.`,
+          calendarConnected: true,
         },
         durationMs: Date.now() - start,
       }
-    } catch (calError) {
-      // Calendar API not available — still log the request
-      const errorMsg = calError instanceof Error ? calError.message : 'Unknown'
-      console.warn(`[ScheduleAriaMeeting] Calendar API unavailable: ${errorMsg}`)
-
-      return {
-        success: true,
-        data: {
-          topic,
-          urgency,
-          scheduledFor: startTime.toISOString(),
-          sessionLink: `/session/${context.sessionId}?live=true`,
-          message: `Meeting request logged but calendar not connected. Topic: "${topic}". The user should check AXIS for pending questions.`,
-          calendarConnected: false,
-        },
-        durationMs: Date.now() - start,
-      }
+    } finally {
+      await prisma.$disconnect()
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-    return { success: false, data: null, error: `Failed to schedule meeting: ${errorMsg}`, durationMs: Date.now() - start }
+    console.error(`[ScheduleAriaMeeting] Failed: ${errorMsg}`)
+    return {
+      success: true,
+      data: {
+        topic, urgency, scheduledFor: startTime.toISOString(),
+        sessionLink: `/session/${context.sessionId}?live=true`,
+        message: `Meeting request logged but calendar creation failed: ${errorMsg}`,
+        calendarConnected: false,
+      },
+      durationMs: Date.now() - start,
+    }
   }
 }
