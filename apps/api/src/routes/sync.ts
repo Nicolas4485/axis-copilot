@@ -439,11 +439,15 @@ syncRouter.post('/gmail', async (req: Request, res: Response) => {
   const maxResults = parsed.data.maxResults ?? 50
   const clientId = parsed.data.clientId
 
+  // Prefer the GMAIL integration — it was granted with Gmail scope
   const integration = await prisma.integration.findFirst({
+    where: { userId: req.userId!, provider: 'GMAIL' },
+  }) ?? await prisma.integration.findFirst({
     where: {
       userId: req.userId!,
-      provider: { in: ['GOOGLE_DRIVE', 'GOOGLE_DOCS', 'GOOGLE_SHEETS', 'GMAIL'] },
+      provider: { in: ['GOOGLE_DRIVE', 'GOOGLE_DOCS', 'GOOGLE_SHEETS'] },
     },
+    orderBy: { createdAt: 'desc' },
   })
 
   if (!integration) {

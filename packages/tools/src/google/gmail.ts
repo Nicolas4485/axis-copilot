@@ -1,6 +1,6 @@
 // Gmail — send emails, create drafts
 
-const GMAIL_API = 'https://gmail.googleapis.com/v1/users/me'
+const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 
 /** Sent/draft email info */
 export interface EmailResult {
