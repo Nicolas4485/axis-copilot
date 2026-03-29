@@ -115,12 +115,13 @@ export class BaseAgent {
           toolContext
         )
 
-        // Feed tool result back as text (InferenceEngine formats for model)
+        // Feed tool result back as tool_result block (required by Claude)
         toolResultContent.push({
-          type: 'text' as const,
-          text: `[Tool result for ${toolUse.name}]: ${JSON.stringify(
+          type: 'tool_result' as const,
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(
             result.success ? result.data : { error: result.error }
-          )}`,
+          ),
         })
       }
 

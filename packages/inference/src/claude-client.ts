@@ -18,7 +18,7 @@ import type {
 const MODEL_IDS: Record<ClaudeModel, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6-20250514',
-  opus: 'claude-opus-4-6-20250514',
+  opus: 'claude-opus-4-6',
 }
 
 /** Cost per million tokens (input/output) in USD */
@@ -100,6 +100,12 @@ export class ClaudeClient {
             id: block.id,
             name: block.name,
             input: block.input,
+          })
+        } else if (block.type === 'tool_result') {
+          blocks.push({
+            type: 'tool_result',
+            tool_use_id: block.tool_use_id,
+            content: block.content,
           })
         }
       }
