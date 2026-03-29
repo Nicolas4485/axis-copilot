@@ -155,13 +155,29 @@ export class IngestionPipeline {
         `Chunked into ${chunkCount} pieces (target: ${CHUNK_TARGET_TOKENS} tokens)`
       )
 
-      // Step 7: Embed — skipped (zero vectors until Voyage AI is integrated)
+      // Step 7a: Create document record first (chunks reference it via foreign key)
+      await this.updateRecords(documentId, {
+        userId,
+        clientId,
+        title: parsed.metadata.title,
+        sourceType,
+        sourcePath: options?.sourcePath ?? null,
+        sourceId: options?.sourceId ?? null,
+        mimeType,
+        docType,
+        checksum,
+        chunkCount,
+        entityCount,
+      })
+
+      // Step 7: Embed — generate embeddings via Voyage AI
+      const embeddings = await this.embedChunks(chunks)
       this.emitProgress(documentId, 'embed', 7,
-        `Embedding skipped (Voyage AI pending) — ${chunkCount} chunks ready`
+        `Generated ${embeddings.length} embeddings (${embeddings[0]?.length ?? 0} dimensions)`
       )
 
-      // Step 8: Store chunks — save to PostgreSQL via Prisma
-      await this.storeChunks(documentId, chunks)
+      // Step 8: Store chunks — save to PostgreSQL via Prisma with embeddings
+      await this.storeChunks(documentId, chunks, embeddings)
       this.emitProgress(documentId, 'store_chunks', 8,
         `Stored ${chunkCount} chunks in database`
       )
@@ -339,9 +355,12 @@ Preview: ${parsed.text.slice(0, 300)}`,
         })
       }
 
-      position = endPos - overlapChars
-      if (position <= (chunks.length > 0 ? endPos - charsPerChunk : 0)) {
-        position = endPos
+      // Advance position; ensure it always moves forward
+      const nextPosition = endPos - overlapChars
+      if (nextPosition <= position || nextPosition < 0) {
+        position = endPos // Prevent infinite loop
+      } else {
+        position = nextPosition
       }
     }
 
@@ -357,20 +376,82 @@ Preview: ${parsed.text.slice(0, 300)}`,
     return chunks
   }
 
-  /** Step 8: Store chunks in PostgreSQL via Prisma */
+  /** Step 7: Generate embeddings via Voyage AI in batches of 50 */
+  private async embedChunks(chunks: DocumentChunk[]): Promise<number[][]> {
+    const voyageKey = process.env['VOYAGE_API_KEY']
+    if (!voyageKey) {
+      console.warn('[Pipeline] VOYAGE_API_KEY not set — using zero vectors')
+      return chunks.map(() => new Array(1024).fill(0) as number[])
+    }
+
+    const embeddings: number[][] = []
+    const BATCH_SIZE = 50
+
+    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+      const batch = chunks.slice(i, i + BATCH_SIZE)
+      const texts = batch.map((c) => c.content)
+
+      try {
+        const response = await fetch('https://api.voyageai.com/v1/embeddings', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${voyageKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            input: texts,
+            model: 'voyage-3-lite',
+            input_type: 'document',
+          }),
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error(`[Pipeline] Voyage AI error ${response.status}: ${errorText}`)
+          for (const _t of texts) {
+            embeddings.push(new Array(1024).fill(0) as number[])
+          }
+          continue
+        }
+
+        const data = await response.json() as {
+          data: Array<{ embedding: number[] }>
+          usage: { total_tokens: number }
+        }
+
+        for (const item of data.data) {
+          embeddings.push(item.embedding)
+        }
+
+        console.log(`[Pipeline] Voyage AI: embedded batch ${Math.floor(i / BATCH_SIZE) + 1}, ${data.usage.total_tokens} tokens`)
+      } catch (err) {
+        console.error(`[Pipeline] Voyage AI failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+        for (const _t of texts) {
+          embeddings.push(new Array(1024).fill(0) as number[])
+        }
+      }
+    }
+
+    return embeddings
+  }
+
+  /** Step 8: Store chunks in PostgreSQL via Prisma with embeddings */
   private async storeChunks(
     documentId: string,
-    chunks: DocumentChunk[]
+    chunks: DocumentChunk[],
+    embeddings: number[][]
   ): Promise<void> {
     // Delete any existing chunks for this document (re-ingestion)
     await this.prisma.documentChunk.deleteMany({
       where: { documentId },
     })
 
-    // Batch insert chunks via Prisma
+    // Insert chunks with embeddings
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!
-      await this.prisma.documentChunk.create({
+      const embedding = embeddings[i]
+
+      const created = await this.prisma.documentChunk.create({
         data: {
           documentId,
           content: chunk.content,
@@ -380,11 +461,15 @@ Preview: ${parsed.text.slice(0, 300)}`,
         },
       })
 
-      // TODO: When Voyage AI embeddings are real, store via raw SQL:
-      // await this.prisma.$executeRaw`
-      //   UPDATE "DocumentChunk" SET embedding = ${embeddings[i]}::vector
-      //   WHERE id = ${chunkId}
-      // `
+      // Store embedding via raw SQL (pgvector column)
+      if (embedding && embedding.some((v) => v !== 0)) {
+        const vectorStr = `[${embedding.join(',')}]`
+        await this.prisma.$executeRawUnsafe(
+          `UPDATE document_chunks SET embedding = $1::vector WHERE id = $2`,
+          vectorStr,
+          created.id
+        )
+      }
     }
   }
 

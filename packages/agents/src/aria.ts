@@ -2,8 +2,7 @@
 // Replaces the headless Orchestrator + absorbs IntakeAgent
 // Uses Gemini 2.0 Flash for conversation, delegates to worker agents via InferenceEngine
 
-import { InferenceEngine } from '@axis/inference'
-import { GeminiClient } from '@axis/inference/src/gemini-client.js'
+import { InferenceEngine, GeminiClient } from '@axis/inference'
 import { RAGEngine } from '@axis/rag'
 import { InfiniteMemory } from '@axis/memory'
 import type { ToolContext, ToolResult } from '@axis/tools'

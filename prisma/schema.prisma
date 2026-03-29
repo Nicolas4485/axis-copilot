@@ -334,7 +334,7 @@ model DocumentChunk {
   tokens     Int      @default(0)
   metadata   Json     @default("{}")
   /// pgvector: populated by ingestion pipeline — do not write from application code
-  embedding  Unsupported("vector(1536)")?
+  embedding  Unsupported("vector(512)")?
   createdAt  DateTime @default(now()) @map("created_at")
 
   document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -379,7 +379,7 @@ model AgentMemory {
   content    String
   tags       Json       @default("[]")
   /// pgvector: populated by memory manager — do not write from application code
-  embedding  Unsupported("vector(1536)")?
+  embedding  Unsupported("vector(512)")?
   createdAt  DateTime   @default(now()) @map("created_at")
 
   user   User    @relation(fields: [userId], references: [id])

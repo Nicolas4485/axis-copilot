@@ -1,9 +1,81 @@
 // Drive Sync — recursively syncs a Google Drive folder into the AXIS knowledge base
 // Finds the target folder, lists all files, downloads content, runs through ingestion pipeline
 
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import { prisma } from './prisma.js'
-import { getValidToken } from '@axis/tools/src/google/auth.js'
-import * as drive from '@axis/tools/src/google/drive.js'
+import { google } from '@axis/tools'
+const { getValidToken, listFiles: driveListFiles, downloadFile: driveDownloadFile } = google
+type DriveFile = Awaited<ReturnType<typeof driveListFiles>>['files'][number]
+import type { IngestionResult } from '@axis/ingestion'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+/** Run the ingestion pipeline in a separate Node process with its own memory */
+function runPipelineWorker(input: {
+  fileContent: string
+  filename: string
+  mimeType: string
+  userId: string
+  options?: Record<string, unknown>
+}): Promise<IngestionResult> {
+  return new Promise((resolve, reject) => {
+    // Use compiled JS worker to avoid tsx's 4GB+ memory overhead
+    const workerPath = join(__dirname, '..', '..', 'dist', 'lib', 'pipeline-worker.js')
+    const child = spawn('node', [
+      '--max-old-space-size=4096',
+      workerPath,
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+    child.stderr.on('data', (data: Buffer) => {
+      const line = data.toString().trim()
+      if (line) {
+        stderr += line + '\n'
+        // Log pipeline progress from worker
+        try {
+          const progress = JSON.parse(line) as { step?: string; message?: string }
+          if (progress.step) {
+            console.log(`[PipelineWorker] ${progress.message ?? progress.step}`)
+          }
+        } catch {
+          if (!line.includes('ExperimentalWarning')) {
+            console.log(`[PipelineWorker] ${line}`)
+          }
+        }
+      }
+    })
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Pipeline worker exited with code ${code}: ${stderr.slice(-500)}`))
+        return
+      }
+      try {
+        const result = JSON.parse(stdout) as IngestionResult
+        resolve(result)
+      } catch {
+        reject(new Error(`Pipeline worker returned invalid JSON: ${stdout.slice(0, 200)}`))
+      }
+    })
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to spawn pipeline worker: ${err.message}`))
+    })
+
+    // Send input via stdin
+    child.stdin.write(JSON.stringify(input))
+    child.stdin.end()
+  })
+}
 
 /** Progress callback for UI updates */
 export interface SyncProgress {
@@ -70,7 +142,7 @@ export async function findFolder(
   folderName: string
 ): Promise<{ id: string; name: string } | null> {
   // Use contains for flexible matching, then exact-match client-side
-  const result = await drive.listFiles(accessToken, {
+  const result = await driveListFiles(accessToken, {
     query: `name contains '${folderName.split('-')[0] ?? folderName}' and mimeType = 'application/vnd.google-apps.folder'`,
     pageSize: 20,
   })
@@ -97,12 +169,12 @@ async function listAllFiles(
   accessToken: string,
   folderId: string,
   path: string = ''
-): Promise<Array<{ file: drive.DriveFile; path: string }>> {
-  const allFiles: Array<{ file: drive.DriveFile; path: string }> = []
+): Promise<Array<{ file: DriveFile; path: string }>> {
+  const allFiles: Array<{ file: DriveFile; path: string }> = []
   let pageToken: string | null = null
 
   do {
-    const result = await drive.listFiles(accessToken, {
+    const result = await driveListFiles(accessToken, {
       folderId,
       pageSize: 100,
       ...(pageToken ? { pageToken } : {}),
@@ -186,11 +258,7 @@ export async function syncDriveFolder(
   console.log(`[DriveSync] Found ${allFiles.length} files, ${ingestableFiles.length} ingestable`)
   onProgress?.({ phase: 'downloading', totalFiles: ingestableFiles.length, processedFiles: 0, currentFile: null, errors })
 
-  // Create a single pipeline instance for all files (reuse engine + prisma)
-  const { IngestionPipeline } = await import('@axis/ingestion')
-  const pipeline = new IngestionPipeline({ prisma })
-
-  // Process each file
+  // Process each file (each runs in a separate Node process to avoid OOM)
   for (let i = 0; i < ingestableFiles.length; i++) {
     const { file, path } = ingestableFiles[i]!
     onProgress?.({ phase: 'ingesting', totalFiles: ingestableFiles.length, processedFiles: i, currentFile: path, errors })
@@ -209,15 +277,21 @@ export async function syncDriveFolder(
 
       // Download content
       console.log(`[DriveSync] Downloading: ${path} (${file.mimeType})`)
-      const content = await drive.downloadFile(accessToken, file.id, file.mimeType)
+      const content = await driveDownloadFile(accessToken, file.id, file.mimeType)
 
-      // Run through the real ingestion pipeline
+      // Run pipeline in a separate process to avoid OOM from tsx
       try {
-        const result = await pipeline.ingestDocument(content, file.name, file.mimeType, userId, {
-          ...(clientId ? { clientId } : {}),
-          sourceType: 'GDRIVE',
-          sourceId: file.id,
-          sourcePath: path,
+        const result = await runPipelineWorker({
+          fileContent: content.toString('base64'),
+          filename: file.name,
+          mimeType: file.mimeType,
+          userId,
+          options: {
+            ...(clientId ? { clientId } : {}),
+            sourceType: 'GDRIVE',
+            sourceId: file.id,
+            sourcePath: path,
+          },
         })
 
         if (result.status === 'FAILED') {

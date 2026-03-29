@@ -3,7 +3,8 @@ import type { Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { authenticate } from '../middleware/auth.js'
 import { googleConnectSchema } from '../lib/schemas.js'
-import { getAuthUrl, exchangeCode, encryptTokens } from '@axis/tools/src/google/auth.js'
+import { google } from '@axis/tools'
+const { getAuthUrl, exchangeCode, encryptTokens } = google
 import { WebhookHandler } from '@axis/ingestion'
 
 import { prisma as prismaClient } from '../lib/prisma.js'
