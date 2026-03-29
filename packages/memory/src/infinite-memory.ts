@@ -1,21 +1,21 @@
 // Infinite Memory — 5-tier memory system for agent context
 //
-// Tier 1: Working Memory (Redis)     — current session state, last ~10 messages
-// Tier 2: Summary Memory (Redis)     — compressed session summaries
+// Tier 1: Working Memory (Prisma)    — current session messages from DB
+// Tier 2: Summary Memory (Prisma)    — compressed session summaries
 // Tier 3: Episodic Memory (pgvector) — searchable past interactions
 // Tier 4: Semantic Memory (Neo4j)    — knowledge graph relationships
-// Tier 5: Archival Memory (Drive)    — full session exports
+// Tier 5: Archival Memory            — archived session references
 //
 // buildAgentContext() assembles <= 6000 tokens from all tiers.
-// summariseSession() compresses and archives when sessions grow large.
 
+import type { PrismaClient } from '@prisma/client'
 import { InferenceEngine } from '@axis/inference'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 
 /** Memory tier identifiers */
 export type MemoryTier = 'WORKING' | 'SUMMARY' | 'EPISODIC' | 'SEMANTIC' | 'ARCHIVAL'
 
-/** A working memory entry (stored in Redis) */
+/** A working memory entry */
 export interface WorkingMemoryEntry {
   role: 'USER' | 'ASSISTANT' | 'SYSTEM'
   content: string
@@ -23,7 +23,7 @@ export interface WorkingMemoryEntry {
   tokens: number
 }
 
-/** A session summary (stored in Redis) */
+/** A session summary */
 export interface SessionSummary {
   sessionId: string
   summary: string
@@ -34,7 +34,7 @@ export interface SessionSummary {
   tokens: number
 }
 
-/** An episodic memory record (stored in pgvector) */
+/** An episodic memory record */
 export interface EpisodicMemory {
   id: string
   userId: string
@@ -47,60 +47,44 @@ export interface EpisodicMemory {
 
 /** Assembled agent context from all memory tiers */
 export interface AssembledContext {
-  /** Full context string ready for the agent's user turn */
   text: string
-  /** Token count of the assembled context */
   tokens: number
-  /** Which tiers contributed to this context */
   tiersUsed: MemoryTier[]
-  /** Session summary if available */
   sessionSummary: string | null
-  /** Recent messages from working memory */
   recentMessages: WorkingMemoryEntry[]
-  /** Relevant episodic memories */
   episodicMemories: EpisodicMemory[]
 }
 
-/** Token budgets for each tier */
 const TIER_BUDGETS = {
-  WORKING: 2000,    // Recent messages
-  SUMMARY: 1000,    // Session summary
-  EPISODIC: 1500,   // Past interactions
-  SEMANTIC: 1000,   // Graph context
-  ARCHIVAL: 500,    // Referenced archives
+  WORKING: 2000,
+  SUMMARY: 1000,
+  EPISODIC: 1500,
+  SEMANTIC: 1000,
+  ARCHIVAL: 500,
 } as const
 
 const TOTAL_BUDGET = 6000
 const WORKING_MEMORY_MAX_MESSAGES = 10
-const SUMMARY_TRIGGER_MESSAGE_COUNT = 5  // Summarise every 5 messages
 
-/** Approximate tokens from character count */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
-/**
- * InfiniteMemory manages a 5-tier memory system that gives agents
- * the illusion of unlimited context.
- *
- * As conversations grow, older content automatically compresses
- * and migrates to deeper tiers, keeping the active context window
- * within token limits while preserving important information.
- */
 export class InfiniteMemory {
   private engine: InferenceEngine
   private neo4jClient: Neo4jClient
   private graphOps: GraphOperations
-  // TODO: Redis client for working + summary memory
-  // private redis: Redis
+  private prisma: PrismaClient | null
 
   constructor(options?: {
     engine?: InferenceEngine | undefined
     neo4jClient?: Neo4jClient | undefined
+    prisma?: PrismaClient | undefined
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
     this.neo4jClient = options?.neo4jClient ?? new Neo4jClient()
     this.graphOps = new GraphOperations(this.neo4jClient)
+    this.prisma = options?.prisma ?? null
   }
 
   /**
@@ -117,7 +101,7 @@ export class InfiniteMemory {
     const parts: string[] = []
     let tokensRemaining = TOTAL_BUDGET
 
-    // Tier 1: Working Memory — recent messages from Redis
+    // Tier 1: Working Memory — recent messages from current session
     const recentMessages = await this.getWorkingMemory(sessionId)
     if (recentMessages.length > 0) {
       tiersUsed.push('WORKING')
@@ -127,19 +111,18 @@ export class InfiniteMemory {
       tokensRemaining -= workingTokens
     }
 
-    // Tier 2: Summary Memory — compressed session summary from Redis
-    const summary = await this.getSessionSummary(sessionId)
+    // Tier 2: Summary Memory — summaries from OTHER sessions with same client
+    const summary = await this.getSessionSummary(sessionId, userId, clientId)
     let sessionSummary: string | null = null
     if (summary) {
       tiersUsed.push('SUMMARY')
       sessionSummary = summary.summary
       const summaryText = this.formatSummary(summary, Math.min(tokensRemaining, TIER_BUDGETS.SUMMARY))
-      const summaryTokens = estimateTokens(summaryText)
-      parts.push(`<SESSION_SUMMARY>\n${summaryText}\n</SESSION_SUMMARY>`)
-      tokensRemaining -= summaryTokens
+      parts.push(`<PREVIOUS_SESSIONS>\n${summaryText}\n</PREVIOUS_SESSIONS>`)
+      tokensRemaining -= estimateTokens(summaryText)
     }
 
-    // Tier 3: Episodic Memory — relevant past interactions via pgvector
+    // Tier 3: Episodic Memory — relevant past interactions via Prisma
     const episodicMemories = await this.searchEpisodicMemory(
       currentMessage, userId, clientId,
       Math.min(tokensRemaining, TIER_BUDGETS.EPISODIC)
@@ -150,31 +133,34 @@ export class InfiniteMemory {
         episodicMemories,
         Math.min(tokensRemaining, TIER_BUDGETS.EPISODIC)
       )
-      const episodicTokens = estimateTokens(episodicText)
       parts.push(`<PAST_INTERACTIONS>\n${episodicText}\n</PAST_INTERACTIONS>`)
-      tokensRemaining -= episodicTokens
+      tokensRemaining -= estimateTokens(episodicText)
     }
 
     // Tier 4: Semantic Memory — knowledge graph context from Neo4j
     if (this.neo4jClient.isAvailable() && clientId) {
-      const graphContext = await this.getSemanticMemory(clientId, tokensRemaining)
-      if (graphContext) {
-        tiersUsed.push('SEMANTIC')
-        parts.push(`<KNOWLEDGE_GRAPH>\n${graphContext}\n</KNOWLEDGE_GRAPH>`)
-        tokensRemaining -= estimateTokens(graphContext)
+      try {
+        const graphContext = await this.getSemanticMemory(clientId, tokensRemaining)
+        if (graphContext) {
+          tiersUsed.push('SEMANTIC')
+          parts.push(`<KNOWLEDGE_GRAPH>\n${graphContext}\n</KNOWLEDGE_GRAPH>`)
+          tokensRemaining -= estimateTokens(graphContext)
+        }
+      } catch {
+        // Neo4j failed — continue without graph context
       }
     }
 
-    // Tier 5: Archival Memory — referenced only, not loaded inline
-    // Archives are too large to include; instead, we note their existence
-    // so the agent can request specific content via tools
-    const archiveNote = await this.getArchivalNote(sessionId, userId)
+    // Tier 5: Archival — note existence of archived sessions
+    const archiveNote = await this.getArchivalNote(userId)
     if (archiveNote) {
       tiersUsed.push('ARCHIVAL')
       parts.push(`<ARCHIVES>\n${archiveNote}\n</ARCHIVES>`)
     }
 
     const text = parts.join('\n\n')
+
+    void currentMessage
 
     return {
       text,
@@ -187,94 +173,52 @@ export class InfiniteMemory {
   }
 
   /**
-   * Summarise the current session and compress older messages.
-   * Called when messageCount % 5 === 0.
-   *
-   * Flow:
-   * 1. Get all working memory messages
-   * 2. Summarise via Claude Haiku
-   * 3. Store summary in Redis (Tier 2)
-   * 4. Trim working memory to last 10 messages
-   * 5. Store older messages as episodic memories (Tier 3)
+   * Add a message to working memory.
+   * Messages are stored in the database, so this is a no-op — they're already there.
+   * We just track them for the summarisation trigger.
    */
-  async summariseSession(sessionId: string, userId: string): Promise<SessionSummary> {
-    // Get current working memory
-    const messages = await this.getWorkingMemory(sessionId)
-    const existingSummary = await this.getSessionSummary(sessionId)
+  async addToWorkingMemory(
+    _sessionId: string,
+    _role: 'USER' | 'ASSISTANT' | 'SYSTEM',
+    _content: string
+  ): Promise<void> {
+    // Messages are already stored in the database via the API routes.
+    // This method exists for the interface — no additional storage needed.
+  }
 
-    // Build text for summarisation
+  /**
+   * Summarise the current session via Claude Haiku.
+   */
+  async summariseSession(sessionId: string, _userId: string): Promise<SessionSummary> {
+    const messages = await this.getWorkingMemory(sessionId)
+
     const conversationText = messages
       .map((m) => `${m.role}: ${m.content}`)
       .join('\n')
 
-    const previousSummary = existingSummary?.summary ?? ''
-
-    // Summarise via Claude Haiku
     let summaryText: string
     try {
       summaryText = await this.engine.summariseSession(
         messages.map((m) => ({
           role: m.role === 'USER' ? 'user' as const : 'assistant' as const,
           content: m.content,
-        })),
-        previousSummary || undefined
+        }))
       )
     } catch {
-      // Summarisation failed — use simple truncation
-      summaryText = previousSummary
-        ? `${previousSummary}\n\nContinued: ${conversationText.slice(0, 500)}`
-        : conversationText.slice(0, 1000)
+      summaryText = conversationText.slice(0, 1000)
     }
 
-    // Extract key topics
     const keyTopics = this.extractKeyTopics(summaryText)
 
-    const summary: SessionSummary = {
+    return {
       sessionId,
       summary: summaryText,
       keyTopics,
-      clientId: null, // TODO: look up from session
-      messageCount: messages.length + (existingSummary?.messageCount ?? 0),
+      clientId: null,
+      messageCount: messages.length,
       lastUpdated: new Date().toISOString(),
       tokens: estimateTokens(summaryText),
     }
-
-    // TODO: Store summary in Redis
-    // await this.redis.set(`axis:summary:${sessionId}`, JSON.stringify(summary))
-
-    // TODO: Trim working memory — keep only last WORKING_MEMORY_MAX_MESSAGES
-    // const toArchive = messages.slice(0, -WORKING_MEMORY_MAX_MESSAGES)
-    // for (const msg of toArchive) {
-    //   await this.storeEpisodicMemory(sessionId, userId, msg)
-    // }
-
-    void userId
-    void WORKING_MEMORY_MAX_MESSAGES
-    void SUMMARY_TRIGGER_MESSAGE_COUNT
-
-    return summary
-  }
-
-  /**
-   * Add a message to working memory (Redis).
-   */
-  async addToWorkingMemory(
-    sessionId: string,
-    role: 'USER' | 'ASSISTANT' | 'SYSTEM',
-    content: string
-  ): Promise<void> {
-    const entry: WorkingMemoryEntry = {
-      role,
-      content,
-      timestamp: new Date().toISOString(),
-      tokens: estimateTokens(content),
-    }
-
-    // TODO: Push to Redis list
-    // await this.redis.rpush(`axis:working:${sessionId}`, JSON.stringify(entry))
-    // await this.redis.ltrim(`axis:working:${sessionId}`, -WORKING_MEMORY_MAX_MESSAGES * 2, -1)
-    void entry
-    void sessionId
   }
 
   /**
@@ -286,57 +230,165 @@ export class InfiniteMemory {
     content: string,
     tags: string[]
   ): Promise<void> {
-    // TODO: Create AgentMemory record via Prisma with embedding
-    // const embedding = await voyageClient.embed({ input: [content] })
-    // await prisma.agentMemory.create({
-    //   data: {
-    //     userId, clientId, memoryType: 'EPISODIC',
-    //     content, tags,
-    //   },
-    // })
-    // Raw SQL for embedding: UPDATE "AgentMemory" SET embedding = $1 WHERE id = $2
-    void userId
-    void clientId
-    void content
-    void tags
+    if (!this.prisma) return
+
+    await this.prisma.agentMemory.create({
+      data: {
+        userId,
+        ...(clientId ? { clientId } : {}),
+        memoryType: 'EPISODIC',
+        content,
+        tags,
+      },
+    })
   }
 
   // ─── Private tier access methods ───────────────────────────────
 
-  /** Tier 1: Get recent messages from Redis */
-  private async getWorkingMemory(_sessionId: string): Promise<WorkingMemoryEntry[]> {
-    // TODO: Read from Redis list
-    // const raw = await this.redis.lrange(`axis:working:${sessionId}`, -WORKING_MEMORY_MAX_MESSAGES, -1)
-    // return raw.map(r => JSON.parse(r))
-    return []
+  /** Tier 1: Get recent messages from the current session via Prisma */
+  private async getWorkingMemory(sessionId: string): Promise<WorkingMemoryEntry[]> {
+    if (!this.prisma) return []
+
+    try {
+      const messages = await this.prisma.message.findMany({
+        where: { sessionId },
+        orderBy: { createdAt: 'desc' },
+        take: WORKING_MEMORY_MAX_MESSAGES,
+        select: { role: true, content: true, createdAt: true },
+      })
+
+      return messages.reverse().map((m) => ({
+        role: m.role as 'USER' | 'ASSISTANT' | 'SYSTEM',
+        content: m.content,
+        timestamp: m.createdAt.toISOString(),
+        tokens: estimateTokens(m.content),
+      }))
+    } catch {
+      return []
+    }
   }
 
-  /** Tier 2: Get session summary from Redis */
-  private async getSessionSummary(_sessionId: string): Promise<SessionSummary | null> {
-    // TODO: Read from Redis
-    // const raw = await this.redis.get(`axis:summary:${sessionId}`)
-    // return raw ? JSON.parse(raw) : null
-    return null
+  /** Tier 2: Build summary from OTHER sessions with the same client */
+  private async getSessionSummary(
+    currentSessionId: string,
+    userId: string,
+    clientId: string | null
+  ): Promise<SessionSummary | null> {
+    if (!this.prisma) return null
+
+    try {
+      // Get recent messages from OTHER sessions (not current)
+      const otherSessions = await this.prisma.session.findMany({
+        where: {
+          userId,
+          id: { not: currentSessionId },
+          ...(clientId ? { clientId } : {}),
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 3,
+        include: {
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 5,
+            select: { role: true, content: true },
+          },
+        },
+      })
+
+      if (otherSessions.length === 0) return null
+
+      const summaryParts: string[] = []
+      let totalMessages = 0
+
+      for (const session of otherSessions) {
+        if (session.messages.length === 0) continue
+        const preview = session.messages
+          .reverse()
+          .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
+          .join('\n')
+        summaryParts.push(`Session "${session.title ?? 'Untitled'}":\n${preview}`)
+        totalMessages += session.messages.length
+      }
+
+      if (summaryParts.length === 0) return null
+
+      return {
+        sessionId: currentSessionId,
+        summary: summaryParts.join('\n\n'),
+        keyTopics: [],
+        clientId,
+        messageCount: totalMessages,
+        lastUpdated: new Date().toISOString(),
+        tokens: estimateTokens(summaryParts.join('\n\n')),
+      }
+    } catch {
+      return null
+    }
   }
 
-  /** Tier 3: Search episodic memories via pgvector */
+  /** Tier 3: Search episodic memories via Prisma (text search, not vector) */
   private async searchEpisodicMemory(
-    _query: string,
-    _userId: string,
-    _clientId: string | null,
-    _tokenBudget: number
+    query: string,
+    userId: string,
+    clientId: string | null,
+    tokenBudget: number
   ): Promise<EpisodicMemory[]> {
-    // TODO: Generate embedding for query
-    // TODO: Vector search in AgentMemory table
-    // const embedding = await voyageClient.embed({ input: [query] })
-    // const results = await prisma.$queryRaw`
-    //   SELECT * FROM "AgentMemory"
-    //   WHERE "userId" = ${userId}
-    //   AND 1 - (embedding <=> ${embedding}::vector) >= 0.7
-    //   ORDER BY 1 - (embedding <=> ${embedding}::vector) DESC
-    //   LIMIT 5
-    // `
-    return []
+    if (!this.prisma) return []
+
+    try {
+      // Simple text search on episodic memories
+      const memories = await this.prisma.agentMemory.findMany({
+        where: {
+          userId,
+          memoryType: 'EPISODIC',
+          ...(clientId ? { clientId } : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      })
+
+      // Filter to relevant memories based on keyword overlap
+      const queryWords = new Set(query.toLowerCase().split(/\s+/).filter((w) => w.length > 3))
+      const scored = memories.map((m) => {
+        const contentWords = m.content.toLowerCase().split(/\s+/)
+        const overlap = contentWords.filter((w) => queryWords.has(w)).length
+        const tagOverlap = (m.tags as string[]).filter((t) =>
+          queryWords.has(t.toLowerCase())
+        ).length
+        return { memory: m, score: overlap + tagOverlap * 2 }
+      })
+
+      const relevant = scored
+        .filter((s) => s.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+
+      // If no keyword matches, just return recent memories
+      const results = relevant.length > 0
+        ? relevant.map((s) => s.memory)
+        : memories.slice(0, 3)
+
+      let tokensUsed = 0
+      const output: EpisodicMemory[] = []
+
+      for (const m of results) {
+        const tokens = estimateTokens(m.content)
+        if (tokensUsed + tokens > tokenBudget) break
+        output.push({
+          id: m.id,
+          userId: m.userId,
+          clientId: m.clientId,
+          content: m.content,
+          tags: m.tags as string[],
+          createdAt: m.createdAt.toISOString(),
+        })
+        tokensUsed += tokens
+      }
+
+      return output
+    } catch {
+      return []
+    }
   }
 
   /** Tier 4: Get knowledge graph context from Neo4j */
@@ -349,38 +401,33 @@ export class InfiniteMemory {
       if (!subgraph || subgraph.nodes.length === 0) return null
 
       const readableText = this.graphOps.toReadableText(subgraph)
-
-      // Truncate to token budget
       if (estimateTokens(readableText) > tokenBudget) {
         return readableText.slice(0, tokenBudget * 4)
       }
-
       return readableText
     } catch {
       return null
     }
   }
 
-  /** Tier 5: Get archival note (pointer, not full content) */
-  private async getArchivalNote(
-    _sessionId: string,
-    _userId: string
-  ): Promise<string | null> {
-    // TODO: Check ExportRecord for archived sessions
-    // const exports = await prisma.exportRecord.findMany({
-    //   where: { session: { userId } },
-    //   orderBy: { createdAt: 'desc' },
-    //   take: 5,
-    // })
-    // if (exports.length === 0) return null
-    // return `${exports.length} archived sessions available. Use search_knowledge_base to query them.`
-    return null
+  /** Tier 5: Get archival note */
+  private async getArchivalNote(userId: string): Promise<string | null> {
+    if (!this.prisma) return null
+
+    try {
+      const exportCount = await this.prisma.exportRecord.count({
+        where: { session: { userId } },
+      })
+      if (exportCount === 0) return null
+      return `${exportCount} archived session export(s) available. Use search_knowledge_base to query them.`
+    } catch {
+      return null
+    }
   }
 
   // ─── Formatting helpers ────────────────────────────────────────
 
   private formatWorkingMemory(messages: WorkingMemoryEntry[], tokenBudget: number): string {
-    // Take messages from the end until we hit budget
     const selected: WorkingMemoryEntry[] = []
     let tokensUsed = 0
 
@@ -398,16 +445,7 @@ export class InfiniteMemory {
   }
 
   private formatSummary(summary: SessionSummary, tokenBudget: number): string {
-    const parts = [
-      `Session summary (${summary.messageCount} messages):`,
-      summary.summary,
-    ]
-
-    if (summary.keyTopics.length > 0) {
-      parts.push(`Key topics: ${summary.keyTopics.join(', ')}`)
-    }
-
-    const text = parts.join('\n')
+    const text = `Previous session context (${summary.messageCount} messages):\n${summary.summary}`
     if (estimateTokens(text) > tokenBudget) {
       return text.slice(0, tokenBudget * 4)
     }
@@ -419,7 +457,7 @@ export class InfiniteMemory {
     let tokensUsed = 0
 
     for (const mem of memories) {
-      const line = `[${mem.createdAt}] ${mem.content} (tags: ${mem.tags.join(', ')})`
+      const line = `[${mem.createdAt}] ${mem.content}`
       const lineTokens = estimateTokens(line)
       if (tokensUsed + lineTokens > tokenBudget) break
       lines.push(line)
@@ -430,7 +468,6 @@ export class InfiniteMemory {
   }
 
   private extractKeyTopics(text: string): string[] {
-    // Simple extraction: capitalised words that appear multiple times
     const words = text.split(/\s+/)
     const counts = new Map<string, number>()
 

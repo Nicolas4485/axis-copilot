@@ -82,6 +82,110 @@ export async function createDraft(
   return { draftId: data.id, message: data.message }
 }
 
+/** Gmail message metadata */
+export interface GmailMessage {
+  id: string
+  threadId: string
+  subject: string
+  from: string
+  to: string
+  date: string
+  snippet: string
+  body: string
+  labels: string[]
+}
+
+/**
+ * Search Gmail messages.
+ */
+export async function searchMessages(
+  accessToken: string,
+  query: string,
+  maxResults: number = 20
+): Promise<Array<{ id: string; threadId: string }>> {
+  const params = new URLSearchParams({
+    q: query,
+    maxResults: String(maxResults),
+  })
+
+  const response = await fetch(`${GMAIL_API}/messages?${params}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Gmail search failed: ${response.status} ${await response.text()}`)
+  }
+
+  const data = await response.json() as {
+    messages?: Array<{ id: string; threadId: string }>
+  }
+
+  return data.messages ?? []
+}
+
+/**
+ * Read a full Gmail message by ID.
+ */
+export async function readMessage(
+  accessToken: string,
+  messageId: string
+): Promise<GmailMessage> {
+  const response = await fetch(`${GMAIL_API}/messages/${messageId}?format=full`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Gmail read failed: ${response.status} ${await response.text()}`)
+  }
+
+  const data = await response.json() as {
+    id: string
+    threadId: string
+    labelIds: string[]
+    snippet: string
+    payload: {
+      headers: Array<{ name: string; value: string }>
+      body?: { data?: string }
+      parts?: Array<{
+        mimeType: string
+        body?: { data?: string }
+      }>
+    }
+  }
+
+  const getHeader = (name: string): string => {
+    return data.payload.headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? ''
+  }
+
+  // Extract body from parts or direct body
+  let body = ''
+  if (data.payload.body?.data) {
+    body = Buffer.from(data.payload.body.data, 'base64url').toString('utf-8')
+  } else if (data.payload.parts) {
+    const textPart = data.payload.parts.find((p) => p.mimeType === 'text/plain')
+    const htmlPart = data.payload.parts.find((p) => p.mimeType === 'text/html')
+    const part = textPart ?? htmlPart
+    if (part?.body?.data) {
+      body = Buffer.from(part.body.data, 'base64url').toString('utf-8')
+    }
+  }
+
+  // Strip HTML tags for plain text
+  body = body.replace(/<[^>]*>/g, ' ').replace(/\s{2,}/g, ' ').trim()
+
+  return {
+    id: data.id,
+    threadId: data.threadId,
+    subject: getHeader('Subject'),
+    from: getHeader('From'),
+    to: getHeader('To'),
+    date: getHeader('Date'),
+    snippet: data.snippet,
+    body,
+    labels: data.labelIds ?? [],
+  }
+}
+
 /**
  * Build a base64url-encoded RFC 2822 email.
  */

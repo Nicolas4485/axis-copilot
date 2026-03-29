@@ -27,7 +27,7 @@ export class Orchestrator {
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
     this.rag = options?.rag ?? new RAGEngine({ engine: this.engine, prisma: options?.prisma! })
-    this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine })
+    this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine, prisma: options?.prisma })
 
     this.agents = {
       intake: new IntakeAgent(this.engine, this.memory),

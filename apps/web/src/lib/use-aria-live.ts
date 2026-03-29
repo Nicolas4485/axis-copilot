@@ -196,13 +196,27 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       ws.onclose = (event) => {
         console.log('[AriaLive] WebSocket closed:', event.code, event.reason)
         setIsConnected(false)
-        if (event.code !== 1000) {
-          setState('error')
-          onError?.(`Connection closed: ${event.reason || `code ${event.code}`}`)
-        } else {
+
+        if (event.code === 1000) {
+          // Normal close (user disconnected)
           setState('idle')
+          cleanup()
+          return
         }
+
+        // Unexpected close — auto-reconnect
+        const reason = event.reason || `code ${event.code}`
+        console.log(`[AriaLive] Unexpected close: ${reason} — reconnecting in 2s...`)
+        setState('connecting')
         cleanup()
+
+        // Auto-reconnect after 2 seconds
+        setTimeout(() => {
+          if (wsRef.current === ws || wsRef.current === null) {
+            console.log('[AriaLive] Auto-reconnecting...')
+            void connect()
+          }
+        }, 2000)
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Connection failed'

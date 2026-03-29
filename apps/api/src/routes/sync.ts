@@ -419,3 +419,141 @@ syncRouter.post('/github', async (req: Request, res: Response) => {
 
   if (!isClosed()) res.end()
 })
+
+// ─── POST /api/sync/gmail — Pull Gmail threads into knowledge base ──
+
+const gmailSyncSchema = z.object({
+  query: z.string().optional(),
+  maxResults: z.number().optional(),
+  clientId: z.string().optional(),
+})
+
+syncRouter.post('/gmail', async (req: Request, res: Response) => {
+  const parsed = gmailSyncSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten(), requestId: req.requestId })
+    return
+  }
+
+  const searchQuery = parsed.data.query ?? 'newer_than:30d'
+  const maxResults = parsed.data.maxResults ?? 50
+  const clientId = parsed.data.clientId
+
+  const integration = await prisma.integration.findFirst({
+    where: {
+      userId: req.userId!,
+      provider: { in: ['GOOGLE_DRIVE', 'GOOGLE_DOCS', 'GOOGLE_SHEETS', 'GMAIL'] },
+    },
+  })
+
+  if (!integration) {
+    res.status(400).json({ error: 'Google not connected', code: 'GOOGLE_NOT_CONNECTED', requestId: req.requestId })
+    return
+  }
+
+  const { sendEvent, isClosed } = setupSSE(req, res)
+
+  try {
+    const { google: goog } = await import('@axis/tools')
+    const accessToken = await goog.getValidToken(
+      {
+        accessToken: integration.accessToken,
+        refreshToken: integration.refreshToken ?? '',
+        expiresAt: integration.expiresAt ?? new Date(0),
+      },
+      async (updated) => {
+        await prisma.integration.update({
+          where: { id: integration.id },
+          data: { accessToken: updated.accessToken, refreshToken: updated.refreshToken, expiresAt: updated.expiresAt },
+        })
+      }
+    )
+
+    sendEvent('progress', { phase: 'searching', query: searchQuery })
+    const messages = await goog.searchMessages(accessToken, searchQuery, maxResults)
+    sendEvent('progress', { phase: 'downloading', totalMessages: messages.length })
+
+    let ingested = 0
+    let skipped = 0
+    const errors: string[] = []
+
+    for (let i = 0; i < messages.length; i++) {
+      if (isClosed()) break
+      const msgRef = messages[i]!
+
+      try {
+        const existing = await prisma.knowledgeDocument.findFirst({
+          where: { sourceId: `gmail:${msgRef.id}`, userId: req.userId! },
+        })
+        if (existing) { skipped++; continue }
+
+        const msg = await goog.readMessage(accessToken, msgRef.id)
+        if (msg.body.length < 20) { skipped++; continue }
+
+        const docId = `gmail_${msgRef.id}`
+        const emailContent = `From: ${msg.from}\nTo: ${msg.to}\nDate: ${msg.date}\nSubject: ${msg.subject}\n\n${msg.body}`
+
+        await prisma.knowledgeDocument.create({
+          data: {
+            id: docId,
+            userId: req.userId!,
+            ...(clientId ? { clientId } : {}),
+            title: msg.subject || 'Untitled Email',
+            sourceType: 'WEB',
+            sourcePath: `gmail/${msg.id}`,
+            sourceId: `gmail:${msgRef.id}`,
+            mimeType: 'text/plain',
+            docType: 'EMAIL_THREAD',
+            syncStatus: 'INDEXED',
+            lastSynced: new Date(),
+            chunkCount: 1,
+          },
+        })
+
+        const chunkContent = emailContent.slice(0, 10000)
+        await prisma.documentChunk.create({
+          data: {
+            documentId: docId,
+            content: chunkContent,
+            chunkIndex: 0,
+            tokens: Math.ceil(chunkContent.length / 4),
+            metadata: JSON.parse(JSON.stringify({ from: msg.from, to: msg.to, subject: msg.subject, date: msg.date })),
+          },
+        })
+
+        // Embed via Voyage AI
+        const voyageKey = process.env['VOYAGE_API_KEY']
+        if (voyageKey) {
+          try {
+            const embedResp = await fetch('https://api.voyageai.com/v1/embeddings', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${voyageKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ input: [chunkContent.slice(0, 5000)], model: 'voyage-3-lite', input_type: 'document' }),
+            })
+            if (embedResp.ok) {
+              const embedData = await embedResp.json() as { data: Array<{ embedding: number[] }> }
+              const embedding = embedData.data[0]?.embedding
+              if (embedding) {
+                await prisma.$executeRawUnsafe(
+                  `UPDATE document_chunks SET embedding = $1::vector WHERE document_id = $2`,
+                  `[${embedding.join(',')}]`, docId
+                )
+              }
+            }
+          } catch { /* embedding failed — continue */ }
+        }
+
+        ingested++
+        sendEvent('progress', { phase: 'ingesting', processedMessages: i + 1, totalMessages: messages.length, currentSubject: msg.subject })
+      } catch (err) {
+        errors.push(`${msgRef.id}: ${err instanceof Error ? err.message : 'Failed'}`)
+      }
+    }
+
+    sendEvent('done', { totalMessages: messages.length, ingested, skipped, failed: errors.length, errors: errors.slice(0, 5) })
+  } catch (err) {
+    sendEvent('error', { error: err instanceof Error ? err.message : 'Gmail sync failed' })
+  }
+
+  if (!isClosed()) res.end()
+})

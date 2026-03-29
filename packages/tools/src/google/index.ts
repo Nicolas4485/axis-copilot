@@ -25,5 +25,5 @@ export type { CreatedDoc } from './docs.js'
 export { createSpreadsheet, writeRange, formatSheet } from './sheets.js'
 export type { CreatedSheet } from './sheets.js'
 
-export { sendEmail, createDraft } from './gmail.js'
-export type { EmailResult } from './gmail.js'
+export { sendEmail, createDraft, searchMessages, readMessage } from './gmail.js'
+export type { EmailResult, GmailMessage } from './gmail.js'
