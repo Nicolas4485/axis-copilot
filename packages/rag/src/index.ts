@@ -52,13 +52,17 @@ export class RAGEngine {
   private citationTracker: CitationTracker
   private engine: InferenceEngine
 
-  constructor(options?: {
+  constructor(options: {
     engine?: InferenceEngine | undefined
     neo4jClient?: Neo4jClient | undefined
+    prisma: import('@prisma/client').PrismaClient
   }) {
-    this.engine = options?.engine ?? new InferenceEngine()
+    this.engine = options.engine ?? new InferenceEngine()
     this.decomposer = new QueryDecomposer(this.engine)
-    this.retriever = new HybridRetriever(options?.neo4jClient)
+    this.retriever = new HybridRetriever({
+      neo4jClient: options.neo4jClient,
+      prisma: options.prisma,
+    })
     this.reranker = new Reranker()
     this.compressor = new ContextCompressor()
     this.citationTracker = new CitationTracker()
@@ -90,10 +94,8 @@ export class RAGEngine {
       clientName: options?.clientName,
     })
 
-    // Step 2: Generate query embedding
-    // TODO: Call Voyage AI for query embedding
-    // const embedding = await voyageClient.embed({ input: [userQuery], model: 'voyage-3-lite' })
-    const queryEmbedding = new Array(1536).fill(0) as number[] // Placeholder
+    // Step 2: Generate query embedding via Voyage AI
+    const queryEmbedding = await this.embedQuery(userQuery)
 
     // Step 3: Parallel vector + graph retrieval
     const { chunks, graphInsights } = await this.retriever.retrieve(
@@ -167,5 +169,44 @@ export class RAGEngine {
     // 4. Flag contradictions
     void chunks
     return []
+  }
+
+  /** Embed a query string via Voyage AI for vector search */
+  private async embedQuery(query: string): Promise<number[]> {
+    const voyageKey = process.env['VOYAGE_API_KEY']
+    if (!voyageKey) {
+      console.warn('[RAGEngine] VOYAGE_API_KEY not set — vector search will fail')
+      return new Array(512).fill(0) as number[]
+    }
+
+    try {
+      const response = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${voyageKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          input: [query],
+          model: 'voyage-3-lite',
+          input_type: 'query',
+        }),
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[RAGEngine] Voyage AI error ${response.status}: ${errorText}`)
+        return new Array(512).fill(0) as number[]
+      }
+
+      const data = await response.json() as {
+        data: Array<{ embedding: number[] }>
+      }
+
+      return data.data[0]?.embedding ?? new Array(512).fill(0) as number[]
+    } catch (err) {
+      console.error(`[RAGEngine] Voyage AI failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      return new Array(512).fill(0) as number[]
+    }
   }
 }

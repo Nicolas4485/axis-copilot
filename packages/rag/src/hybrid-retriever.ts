@@ -1,10 +1,11 @@
 // Hybrid Retriever — parallel vector search + graph traversal
 // Neo4j unavailable = automatic vector-only fallback
 
+import type { PrismaClient } from '@prisma/client'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 import type { DecomposedQuery, RetrievedChunk, GraphInsight } from './types.js'
 
-const VECTOR_SIMILARITY_THRESHOLD = 0.72
+const VECTOR_SIMILARITY_THRESHOLD = 0.3  // Lowered from 0.72 — cosine similarity on short docs
 const DEFAULT_VECTOR_LIMIT = 20
 const DEFAULT_GRAPH_DEPTH = 2
 
@@ -32,10 +33,12 @@ interface VectorSearchRow {
 export class HybridRetriever {
   private neo4jClient: Neo4jClient
   private graphOps: GraphOperations
+  private prisma: PrismaClient
 
-  constructor(neo4jClient?: Neo4jClient) {
-    this.neo4jClient = neo4jClient ?? new Neo4jClient()
+  constructor(options: { neo4jClient?: Neo4jClient | undefined; prisma: PrismaClient }) {
+    this.neo4jClient = options.neo4jClient ?? new Neo4jClient()
     this.graphOps = new GraphOperations(this.neo4jClient)
+    this.prisma = options.prisma
   }
 
   /**
@@ -72,53 +75,58 @@ export class HybridRetriever {
     // Search for each decomposed vector query
     for (const vectorQuery of query.vectorQueries) {
       try {
-        // TODO: Execute pgvector cosine similarity search
-        // const result = await prisma.$queryRaw`
-        //   SELECT
-        //     dc.id AS chunk_id,
-        //     dc."documentId" AS document_id,
-        //     dc.content,
-        //     1 - (dc.embedding <=> ${queryEmbedding}::vector) AS similarity,
-        //     kd.title AS source_title,
-        //     kd."sourceType" AS source_type,
-        //     kd."clientId" AS client_id,
-        //     dc."createdAt" AS created_at,
-        //     dc.metadata
-        //   FROM "DocumentChunk" dc
-        //   JOIN "KnowledgeDocument" kd ON kd.id = dc."documentId"
-        //   WHERE kd."userId" = ${userId}
-        //   AND 1 - (dc.embedding <=> ${queryEmbedding}::vector) >= ${VECTOR_SIMILARITY_THRESHOLD}
-        //   ${clientId ? Prisma.sql`AND kd."clientId" = ${clientId}` : Prisma.empty}
-        //   ${query.temporalFilter?.after ? Prisma.sql`AND dc."createdAt" >= ${query.temporalFilter.after}` : Prisma.empty}
-        //   ${query.temporalFilter?.before ? Prisma.sql`AND dc."createdAt" <= ${query.temporalFilter.before}` : Prisma.empty}
-        //   ORDER BY similarity DESC
-        //   LIMIT ${DEFAULT_VECTOR_LIMIT}
-        // `
+        const vectorStr = `[${queryEmbedding.join(',')}]`
 
-        // Placeholder — returns empty until Prisma queries are wired
-        const rows: VectorSearchRow[] = []
+        // Build query with optional client filter
+        let sql = `
+          SELECT
+            dc.id AS chunk_id,
+            dc.document_id,
+            dc.content,
+            1 - (dc.embedding <=> $1::vector) AS similarity,
+            kd.title AS source_title,
+            kd.source_type,
+            kd.client_id,
+            dc.created_at::text,
+            dc.metadata::text
+          FROM document_chunks dc
+          JOIN knowledge_documents kd ON kd.id = dc.document_id
+          WHERE kd.user_id = $2
+          AND dc.embedding IS NOT NULL
+          AND 1 - (dc.embedding <=> $1::vector) >= $3
+        `
+        const params: unknown[] = [vectorStr, userId, VECTOR_SIMILARITY_THRESHOLD]
+
+        if (clientId) {
+          sql += ` AND kd.client_id = $4`
+          params.push(clientId)
+        }
+
+        sql += ` ORDER BY similarity DESC LIMIT $${params.length + 1}`
+        params.push(DEFAULT_VECTOR_LIMIT)
+
+        const rows = await this.prisma.$queryRawUnsafe(sql, ...params) as VectorSearchRow[]
 
         for (const row of rows) {
-          // Deduplicate by chunk_id
           if (!allChunks.some((c) => c.chunkId === row.chunk_id)) {
+            let metadata: Record<string, unknown> = {}
+            try { metadata = JSON.parse(row.metadata as unknown as string) as Record<string, unknown> } catch { /* ignore */ }
+
             allChunks.push({
               chunkId: row.chunk_id,
               documentId: row.document_id,
               content: row.content,
-              similarity: row.similarity,
+              similarity: Number(row.similarity),
               sourceTitle: row.source_title,
               sourceType: row.source_type,
               clientId: row.client_id,
               createdAt: row.created_at,
-              metadata: row.metadata,
+              metadata,
             })
           }
         }
 
         void vectorQuery
-        void queryEmbedding
-        void userId
-        void clientId
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error'
         console.error(`[HybridRetriever] Vector search failed: ${errorMsg}`)

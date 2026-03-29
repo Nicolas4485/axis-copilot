@@ -11,7 +11,7 @@ import { InferenceEngine } from '@axis/inference'
 import { messagesRateLimit } from '../middleware/auth.js'
 
 const engine = new InferenceEngine()
-const aria = new Aria({ engine })
+const aria = new Aria({ engine, prisma })
 
 export const ariaRouter = Router()
 

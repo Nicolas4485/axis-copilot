@@ -23,9 +23,10 @@ export class Orchestrator {
     engine?: InferenceEngine | undefined
     rag?: RAGEngine | undefined
     memory?: InfiniteMemory | undefined
+    prisma?: import('@prisma/client').PrismaClient | undefined
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
-    this.rag = options?.rag ?? new RAGEngine({ engine: this.engine })
+    this.rag = options?.rag ?? new RAGEngine({ engine: this.engine, prisma: options?.prisma! })
     this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine })
 
     this.agents = {

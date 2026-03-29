@@ -50,9 +50,10 @@ export class Aria {
     engine?: InferenceEngine
     rag?: RAGEngine
     memory?: InfiniteMemory
+    prisma?: import('@prisma/client').PrismaClient
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
-    this.rag = options?.rag ?? new RAGEngine({ engine: this.engine })
+    this.rag = options?.rag ?? new RAGEngine({ engine: this.engine, prisma: options?.prisma! })
     this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine })
     this.gemini = new GeminiClient()
     this.toolRegistry = new ToolRegistry()

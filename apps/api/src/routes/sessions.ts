@@ -7,7 +7,7 @@ import { Orchestrator } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
 
 const engine = new InferenceEngine()
-const orchestrator = new Orchestrator({ engine })
+const orchestrator = new Orchestrator({ engine, prisma })
 
 export const sessionsRouter = Router()
 

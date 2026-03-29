@@ -37,9 +37,10 @@ export async function searchKnowledgeBase(
   }
 
   try {
-    // Import RAGEngine dynamically to avoid circular deps at module level
+    // Import RAGEngine and PrismaClient dynamically to avoid circular deps
     const { RAGEngine } = await import('@axis/rag')
-    const rag = new RAGEngine()
+    const { PrismaClient } = await import('@prisma/client')
+    const rag = new RAGEngine({ prisma: new PrismaClient() })
 
     const result = await rag.query(query, context.userId, clientId ?? null, {
       maxChunks: limit,

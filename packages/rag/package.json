@@ -13,7 +13,8 @@
   "dependencies": {
     "@axis/inference": "workspace:*",
     "@axis/knowledge-graph": "workspace:*",
-    "@axis/types": "workspace:*"
+    "@axis/types": "workspace:*",
+    "@prisma/client": "^5.14.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
