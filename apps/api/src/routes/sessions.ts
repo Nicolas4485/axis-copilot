@@ -3,11 +3,11 @@ import type { Request, Response } from 'express'
 import { messagesRateLimit } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
 import { createSessionSchema, sendMessageSchema } from '../lib/schemas.js'
-import { Orchestrator } from '@axis/agents'
+import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
 
 const engine = new InferenceEngine()
-const orchestrator = new Orchestrator({ engine, prisma })
+const aria = new Aria({ engine, prisma })
 
 export const sessionsRouter = Router()
 
@@ -131,11 +131,10 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
 
   try {
     // Run orchestrator
-    const agentResponse = await orchestrator.handleMessage(
+    const agentResponse = await aria.handleTextMessage(
       sessionId,
       req.userId!,
       content,
-      mode as 'intake' | 'product' | 'process' | 'competitive' | 'stakeholder' | undefined,
       imageBase64
     )
 
@@ -143,6 +142,13 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
     for (const tool of agentResponse.toolsUsed) {
       sendEvent('tool_start', { tool })
       sendEvent('tool_result', { tool, status: 'completed' })
+    }
+
+    // Emit delegation events
+    if ('delegations' in agentResponse) {
+      for (const delegation of (agentResponse as { delegations: Array<{ workerType: string; query: string }> }).delegations) {
+        sendEvent('delegation', { workerType: delegation.workerType, query: delegation.query })
+      }
     }
 
     // Emit conflict warnings
