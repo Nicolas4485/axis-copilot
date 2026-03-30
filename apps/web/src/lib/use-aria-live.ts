@@ -438,24 +438,42 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       try {
         let resultData: unknown
 
-        // Check if this is a delegation
+        // Check if this is a delegation — fire async, don't block
         if (name.startsWith('delegate_')) {
+          const workerNames: Record<string, string> = {
+            delegate_product_analysis: 'Sean',
+            delegate_process_analysis: 'Kevin',
+            delegate_competitive_analysis: 'Mel',
+            delegate_stakeholder_analysis: 'Anjie',
+          }
           const workerTypeMap: Record<string, string> = {
             delegate_product_analysis: 'product',
             delegate_process_analysis: 'process',
             delegate_competitive_analysis: 'competitive',
             delegate_stakeholder_analysis: 'stakeholder',
           }
+          const workerName = workerNames[name] ?? 'Agent'
           const workerType = workerTypeMap[name] ?? 'product'
 
+          // Fire delegation in background — don't await
           const imageArg = args['imageBase64'] as string | undefined
-          const result = await aria.delegate({
+          aria.delegate({
             sessionId,
             workerType,
             query: (args['query'] as string) ?? '',
             ...(imageArg ? { imageBase64: imageArg } : {}),
+          }).then(() => {
+            setToolActivities((prev) =>
+              prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
+            )
+          }).catch(() => {
+            setToolActivities((prev) =>
+              prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
+            )
           })
-          resultData = { content: result.content, toolsUsed: result.toolsUsed }
+
+          // Return immediate result so Aria keeps talking
+          resultData = { status: 'delegated', agent: workerName, message: `${workerName} is working on this in the background.` }
         } else {
           const result = await aria.toolCall({
             sessionId,
