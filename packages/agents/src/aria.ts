@@ -171,20 +171,44 @@ export class Aria {
         // Check if this is a delegation
         const workerType = DELEGATION_TOOL_MAP[tc.name]
         if (workerType) {
-          const delegationResult = await this.delegate(
-            workerType,
-            tc.input['query'] as string ?? message,
-            context,
-            tc.input['imageBase64'] as string | undefined
-          )
-          delegations.push({ workerType, query: tc.input['query'] as string ?? message, success: true })
+          const delegationQuery = tc.input['query'] as string ?? message
+          const delegationImage = tc.input['imageBase64'] as string | undefined
 
+          // Fire delegation async — don't block Aria's response
+          const workerNames: Record<WorkerType, string> = {
+            product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie',
+          }
+          const workerName = workerNames[workerType]
+
+          // Run delegation in background
+          this.delegate(workerType, delegationQuery, context, delegationImage)
+            .then((result) => {
+              console.log(`[Aria] ${workerName} completed: ${result.content.length} chars`)
+              // Store result as a system message in the session for later retrieval
+              if (this.memory) {
+                void this.memory.storeEpisodicMemory(
+                  userId,
+                  context.clientId,
+                  `${workerName} (${workerType}) analysis result: ${result.content.slice(0, 2000)}`,
+                  [workerType, workerName, sessionId]
+                )
+              }
+            })
+            .catch((err) => {
+              console.error(`[Aria] ${workerName} failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+            })
+
+          delegations.push({ workerType, query: delegationQuery, success: true })
+
+          // Return immediate acknowledgment — Aria continues talking
           toolResults.push({
-            type: 'text' as const,
-            text: `[Tool result for ${tc.name}]: ${JSON.stringify({
-              content: delegationResult.content,
-              toolsUsed: delegationResult.toolsUsed,
-            })}`,
+            type: 'tool_result' as const,
+            tool_use_id: tc.id,
+            content: JSON.stringify({
+              status: 'delegated',
+              agent: workerName,
+              message: `${workerName} is working on this in the background. They will share their findings when ready.`,
+            }),
           })
         } else {
           // Direct tool execution
@@ -197,10 +221,11 @@ export class Aria {
 
           const result = await this.toolRegistry.executeTool(tc.name, tc.input, toolContext)
           toolResults.push({
-            type: 'text' as const,
-            text: `[Tool result for ${tc.name}]: ${JSON.stringify(
+            type: 'tool_result' as const,
+            tool_use_id: tc.id,
+            content: JSON.stringify(
               result.success ? result.data : { error: result.error }
-            )}`,
+            ),
           })
         }
       }
