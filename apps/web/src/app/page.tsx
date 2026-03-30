@@ -6,10 +6,7 @@ import { health, type HealthStatus } from '@/lib/api'
 import { HealthIndicator } from '@/components/health-indicator'
 import { Plus, MessageSquare, Users, Clock, ArrowRight, Mic } from 'lucide-react'
 
-const START_OPTIONS = [
-  { id: 'text', label: 'Chat with Aria', desc: 'Text-based conversation', icon: MessageSquare, href: '/session/new' },
-  { id: 'live', label: 'Talk to Aria', desc: 'Voice, camera, screen share', icon: Mic, href: '/session/new?live=true' },
-] as const
+// removed START_OPTIONS — single CTA now
 
 export default function Dashboard() {
   const { data: healthData } = useQuery<HealthStatus>({
@@ -29,27 +26,21 @@ export default function Dashboard() {
         <HealthIndicator />
       </div>
 
-      {/* Quick Start */}
-      <section>
-        <h2 className="font-serif text-lg mb-3">Talk to Aria</h2>
-        <div className="grid grid-cols-2 gap-4 max-w-lg">
-          {START_OPTIONS.map((opt) => (
-            <Link
-              key={opt.id}
-              href={opt.href}
-              className="card hover:border-[var(--gold)]/30 transition-colors group"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <opt.icon size={16} className="text-[var(--gold)]" />
-                <span className="text-sm font-medium">{opt.label}</span>
-              </div>
-              <p className="text-xs text-[var(--text-muted)]">{opt.desc}</p>
-            </Link>
-          ))}
-        </div>
-        <p className="text-xs text-[var(--text-muted)] mt-3">
-          Aria routes your requests to specialist agents (Product, Process, Competitive, Stakeholder) automatically.
-        </p>
+      {/* Primary CTA */}
+      <section className="flex flex-col items-center gap-4 py-8">
+        <Link
+          href="/session/new?live=true&automic=true"
+          className="flex items-center gap-3 px-8 py-4 rounded-xl bg-[var(--gold)] text-black font-mono text-lg hover:opacity-90 transition-opacity"
+        >
+          <Mic size={24} />
+          Talk to Aria
+        </Link>
+        <Link
+          href="/session/new"
+          className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+        >
+          or type instead
+        </Link>
       </section>
 
       {/* Recent Sessions + Clients */}

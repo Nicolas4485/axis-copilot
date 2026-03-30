@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, MessageSquare, Users, Settings, Network, BarChart2, FileText } from 'lucide-react'
+import { LayoutDashboard, MessageSquare, Users, Settings, Network, BarChart2, FileText, Mic } from 'lucide-react'
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -31,6 +31,17 @@ export function Sidebar() {
         <Link href="/">
           <h1 className="font-serif text-2xl text-[var(--gold)] tracking-wide">AXIS</h1>
           <p className="text-xs text-[var(--text-muted)] mt-0.5">AI Consulting Co-pilot</p>
+        </Link>
+      </div>
+
+      {/* Talk to Aria — primary CTA */}
+      <div className="p-3">
+        <Link
+          href="/session/new?live=true&automic=true"
+          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-[var(--gold)] text-black font-mono text-sm hover:opacity-90 transition-opacity"
+        >
+          <Mic size={16} />
+          Talk to Aria
         </Link>
       </div>
 

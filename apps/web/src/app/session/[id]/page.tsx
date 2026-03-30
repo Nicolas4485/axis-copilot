@@ -51,6 +51,7 @@ export default function SessionPage() {
   const [imageBase64, setImageBase64] = useState<string | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [liveMode, setLiveMode] = useState(searchParams.get('live') === 'true')
+  const autoMic = searchParams.get('automic') === 'true'
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -215,7 +216,7 @@ export default function SessionPage() {
 
       {/* Live Mode — Aria Live Panel */}
       {liveMode && sessionId && (
-        <AriaLivePanel sessionId={sessionId} />
+        <AriaLivePanel sessionId={sessionId} autoConnect={autoMic} autoMic={autoMic} />
       )}
       {liveMode && !sessionId && (
         <LiveSessionCreator

@@ -10,6 +10,8 @@ import { Send } from 'lucide-react'
 
 interface AriaLivePanelProps {
   sessionId: string
+  autoConnect?: boolean
+  autoMic?: boolean
 }
 
 interface TranscriptEntry {
@@ -18,7 +20,7 @@ interface TranscriptEntry {
   timestamp: Date
 }
 
-export function AriaLivePanel({ sessionId }: AriaLivePanelProps) {
+export function AriaLivePanel({ sessionId, autoConnect = false, autoMic = false }: AriaLivePanelProps) {
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [textInput, setTextInput] = useState('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -49,6 +51,22 @@ export function AriaLivePanel({ sessionId }: AriaLivePanelProps) {
       setErrorMsg(error)
     },
   })
+
+  // Auto-connect and auto-enable mic on mount
+  const autoConnectDone = useRef(false)
+  useEffect(() => {
+    if (autoConnect && !autoConnectDone.current && !ariaLive.isConnected) {
+      autoConnectDone.current = true
+      void ariaLive.connect()
+    }
+  }, [autoConnect, ariaLive.isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-enable mic once connected
+  useEffect(() => {
+    if (autoMic && ariaLive.isConnected && !ariaLive.isMicOn) {
+      ariaLive.toggleMic()
+    }
+  }, [autoMic, ariaLive.isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll transcript
   useEffect(() => {
