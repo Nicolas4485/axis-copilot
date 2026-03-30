@@ -149,6 +149,14 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           // Handle server content (text/audio responses)
           const serverContent = data['serverContent'] as Record<string, unknown> | undefined
           if (serverContent) {
+            // Check if Aria was interrupted by user speaking
+            if (serverContent['interrupted']) {
+              console.log('[AriaLive] Aria interrupted — stopping audio')
+              stopAudioPlayback()
+              setState('listening')
+              return
+            }
+
             const parts = (serverContent['modelTurn'] as Record<string, unknown>)?.['parts'] as Array<Record<string, unknown>> | undefined
             if (parts) {
               for (const part of parts) {
@@ -447,6 +455,17 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
     onToolActivity?.(toolActivities)
   }, [sessionId, toolActivities, onToolActivity])
+
+  // ─── Audio interruption ─────────────────────────────────────────
+
+  const stopAudioPlayback = useCallback(() => {
+    // Close and recreate AudioContext to immediately stop all queued audio
+    if (audioContextRef.current) {
+      void audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+    nextPlayTimeRef.current = 0
+  }, [])
 
   // ─── Audio playback (queued to avoid overlap) ──────────────────
 

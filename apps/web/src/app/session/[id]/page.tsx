@@ -220,7 +220,11 @@ export default function SessionPage() {
       )}
       {liveMode && !sessionId && (
         <LiveSessionCreator
-          onSessionCreated={(id) => { setSessionId(id); router.replace(`/session/${id}`) }}
+          onSessionCreated={(id) => {
+            setSessionId(id)
+            // Update URL without full navigation (avoids remount that loses autoMic)
+            window.history.replaceState(null, '', `/session/${id}?live=true${autoMic ? '&automic=true' : ''}`)
+          }}
           onError={() => setLiveMode(false)}
         />
       )}
