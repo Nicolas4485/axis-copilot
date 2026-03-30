@@ -9,7 +9,7 @@ import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
 const PROCESS_CONFIG: AgentConfig = {
-  name: 'ProcessAgent',
+  name: 'Kevin',
   role: 'Process Analysis & Automation Specialist',
   systemPromptKey: 'AGENT_PROCESS',
   tools: [
@@ -20,6 +20,8 @@ const PROCESS_CONFIG: AgentConfig = {
     'get_graph_context',
     'flag_for_review',
     'ingest_document',
+    'github_read_file',
+    'github_write_file',
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'],
 }

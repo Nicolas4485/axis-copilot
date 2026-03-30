@@ -9,7 +9,7 @@ import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
 const STAKEHOLDER_CONFIG: AgentConfig = {
-  name: 'StakeholderAgent',
+  name: 'Anjie',
   role: 'Stakeholder Mapping & Communication Specialist',
   systemPromptKey: 'AGENT_STAKEHOLDER',
   tools: [

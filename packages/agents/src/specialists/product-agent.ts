@@ -9,7 +9,7 @@ import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
 const PRODUCT_CONFIG: AgentConfig = {
-  name: 'ProductAgent',
+  name: 'Sean',
   role: 'Product Strategy & Critique Specialist',
   systemPromptKey: 'AGENT_PRODUCT',
   tools: [
@@ -19,6 +19,11 @@ const PRODUCT_CONFIG: AgentConfig = {
     'search_knowledge_base',
     'get_graph_context',
     'flag_for_review',
+    'analyze_image',
+    'github_read_file',
+    'github_create_branch',
+    'github_write_file',
+    'github_create_pr',
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC'],
 }

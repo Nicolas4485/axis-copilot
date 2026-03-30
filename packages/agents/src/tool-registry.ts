@@ -23,6 +23,10 @@ import {
   ingestDocument, ingestDocumentDefinition,
   analyzeImage, analyzeImageDefinition,
   scheduleAriaMeeting, scheduleAriaMeetingDefinition,
+  githubReadFile, githubReadFileDefinition,
+  githubCreateBranch, githubCreateBranchDefinition,
+  githubWriteFile, githubWriteFileDefinition,
+  githubCreatePR, githubCreatePRDefinition,
 } from '@axis/tools'
 
 interface ToolEntry {
@@ -52,6 +56,10 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   ingest_document: { definition: ingestDocumentDefinition, execute: ingestDocument },
   analyze_image: { definition: analyzeImageDefinition, execute: analyzeImage },
   schedule_aria_meeting: { definition: scheduleAriaMeetingDefinition, execute: scheduleAriaMeeting },
+  github_read_file: { definition: githubReadFileDefinition, execute: githubReadFile },
+  github_create_branch: { definition: githubCreateBranchDefinition, execute: githubCreateBranch },
+  github_write_file: { definition: githubWriteFileDefinition, execute: githubWriteFile },
+  github_create_pr: { definition: githubCreatePRDefinition, execute: githubCreatePR },
 }
 
 export class ToolRegistry {

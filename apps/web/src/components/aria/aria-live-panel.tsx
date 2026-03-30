@@ -25,6 +25,7 @@ export function AriaLivePanel({ sessionId, autoConnect = false, autoMic = false 
   const [textInput, setTextInput] = useState('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const autoConnectDone = useRef(false)
 
   const ariaLive = useAriaLive({
     sessionId,
@@ -53,7 +54,6 @@ export function AriaLivePanel({ sessionId, autoConnect = false, autoMic = false 
   })
 
   // Auto-connect and auto-enable mic on mount
-  const autoConnectDone = useRef(false)
   useEffect(() => {
     if (autoConnect && !autoConnectDone.current && !ariaLive.isConnected) {
       autoConnectDone.current = true

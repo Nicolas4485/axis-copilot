@@ -9,7 +9,7 @@ import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
 const COMPETITIVE_CONFIG: AgentConfig = {
-  name: 'CompetitiveAgent',
+  name: 'Mel',
   role: 'Competitive Intelligence & Market Analysis Specialist',
   systemPromptKey: 'AGENT_COMPETITIVE',
   tools: [

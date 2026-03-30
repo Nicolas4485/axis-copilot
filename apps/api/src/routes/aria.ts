@@ -280,6 +280,45 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
   if (!closed) res.end()
 })
 
+// ─── POST /api/aria/save-transcript — Save live session transcript ──
+
+const saveTranscriptSchema = z.object({
+  sessionId: z.string().min(1),
+  userText: z.string(),
+  ariaText: z.string(),
+})
+
+ariaRouter.post('/save-transcript', async (req: Request, res: Response) => {
+  try {
+    const parsed = saveTranscriptSchema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', code: 'VALIDATION_ERROR', requestId: req.requestId })
+      return
+    }
+
+    const { sessionId, userText, ariaText } = parsed.data
+
+    // Store user message
+    if (userText.trim()) {
+      await prisma.message.create({
+        data: { sessionId, role: 'USER', content: userText, mode: 'intake', metadata: {} },
+      })
+    }
+
+    // Store Aria response
+    if (ariaText.trim()) {
+      await prisma.message.create({
+        data: { sessionId, role: 'ASSISTANT', content: ariaText, mode: 'intake', metadata: { source: 'live' } },
+      })
+    }
+
+    res.json({ saved: true, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to save transcript', code: 'TRANSCRIPT_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
 // ─── POST /api/aria/memory-refresh ───────────────────────────────
 // Returns updated system instruction for long live sessions
 

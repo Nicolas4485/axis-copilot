@@ -54,6 +54,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
   const wsRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  // Track current turn text for saving transcripts
+  const currentAriaTextRef = useRef('')
   const micStreamRef = useRef<MediaStream | null>(null)
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const screenStreamRef = useRef<MediaStream | null>(null)
@@ -162,6 +164,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               for (const part of parts) {
                 if (part['text']) {
                   const text = part['text'] as string
+                  currentAriaTextRef.current += text
                   onAriaResponse?.(text)
                   setState('speaking')
                 }
@@ -178,6 +181,22 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               setState('listening')
               // Reset audio queue for next turn
               nextPlayTimeRef.current = 0
+
+              // Save transcript to database
+              const ariaText = currentAriaTextRef.current
+              if (ariaText.trim()) {
+                fetch(`${(process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000')}/api/aria/save-transcript`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(typeof window !== 'undefined' && localStorage.getItem('axis_token')
+                      ? { Authorization: `Bearer ${localStorage.getItem('axis_token')}` }
+                      : {}),
+                  },
+                  body: JSON.stringify({ sessionId, userText: '', ariaText }),
+                }).catch(() => { /* transcript save failed — non-critical */ })
+              }
+              currentAriaTextRef.current = ''
             }
           }
 
@@ -388,7 +407,19 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     }))
     console.log('[AriaLive] Sent text:', text.slice(0, 100))
     setState('thinking')
-  }, [])
+
+    // Save user text to database
+    fetch(`${(process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000')}/api/aria/save-transcript`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(typeof window !== 'undefined' && localStorage.getItem('axis_token')
+          ? { Authorization: `Bearer ${localStorage.getItem('axis_token')}` }
+          : {}),
+      },
+      body: JSON.stringify({ sessionId, userText: text, ariaText: '' }),
+    }).catch(() => { /* non-critical */ })
+  }, [sessionId])
 
   // ─── Function call relay ──────────────────────────────────────
 
