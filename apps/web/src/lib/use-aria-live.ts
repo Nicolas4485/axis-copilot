@@ -53,7 +53,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([])
 
   const wsRef = useRef<WebSocket | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)      // For playback only
+  const micAudioContextRef = useRef<AudioContext | null>(null)   // For mic capture only
   // Track current turn text for saving transcripts
   const currentAriaTextRef = useRef('')
   const micStreamRef = useRef<MediaStream | null>(null)
@@ -299,6 +300,10 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       processorRef.current.disconnect()
       processorRef.current = null
     }
+    if (micAudioContextRef.current) {
+      void micAudioContextRef.current.close()
+      micAudioContextRef.current = null
+    }
     if (audioContextRef.current) {
       void audioContextRef.current.close()
       audioContextRef.current = null
@@ -333,7 +338,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       micStreamRef.current = stream
 
       const ctx = new AudioContext({ sampleRate: 16000 })
-      audioContextRef.current = ctx
+      micAudioContextRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
       const processor = ctx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
