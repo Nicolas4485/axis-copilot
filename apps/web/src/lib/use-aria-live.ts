@@ -62,6 +62,20 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const sessionConfigRef = useRef<AriaSessionToken | null>(null)
 
+  // Save transcript to database
+  const saveTranscript = useCallback((userText: string, ariaText: string) => {
+    const apiUrl = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
+    const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
+    fetch(`${apiUrl}/api/aria/save-transcript`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ sessionId, userText, ariaText }),
+    }).catch(() => { /* non-critical */ })
+  }, [sessionId])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -177,24 +191,23 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               }
             }
 
+            // Capture user's speech transcript from Gemini
+            const inputTranscript = serverContent['inputTranscript'] as string | undefined
+            if (inputTranscript) {
+              onTranscript?.(inputTranscript, true)
+              // Save user transcript
+              saveTranscript(inputTranscript, '')
+            }
+
             if (serverContent['turnComplete']) {
               setState('listening')
               // Reset audio queue for next turn
               nextPlayTimeRef.current = 0
 
-              // Save transcript to database
+              // Save Aria's response to database
               const ariaText = currentAriaTextRef.current
               if (ariaText.trim()) {
-                fetch(`${(process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000')}/api/aria/save-transcript`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    ...(typeof window !== 'undefined' && localStorage.getItem('axis_token')
-                      ? { Authorization: `Bearer ${localStorage.getItem('axis_token')}` }
-                      : {}),
-                  },
-                  body: JSON.stringify({ sessionId, userText: '', ariaText }),
-                }).catch(() => { /* transcript save failed — non-critical */ })
+                saveTranscript('', ariaText)
               }
               currentAriaTextRef.current = ''
             }
@@ -203,9 +216,16 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           // Handle tool calls
           const toolCall = data['toolCall'] as Record<string, unknown> | undefined
           if (toolCall) {
+            console.log('[AriaLive] Tool call received:', JSON.stringify(toolCall).slice(0, 500))
+          }
+          if (toolCall) {
             const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
             if (functionCalls) {
-              await handleFunctionCalls(functionCalls)
+              try {
+                await handleFunctionCalls(functionCalls)
+              } catch (err) {
+                console.error('[AriaLive] handleFunctionCalls error:', err)
+              }
             }
           }
 
@@ -322,6 +342,18 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
         const inputData = e.inputBuffer.getChannelData(0)
+
+        // Voice activity detection — if user is speaking, stop Aria's audio
+        let maxAmplitude = 0
+        for (let i = 0; i < inputData.length; i++) {
+          const abs = Math.abs(inputData[i] ?? 0)
+          if (abs > maxAmplitude) maxAmplitude = abs
+        }
+        if (maxAmplitude > 0.02) {
+          // User is speaking — interrupt Aria's audio playback
+          stopAudioPlayback()
+        }
+
         // Convert float32 to int16 PCM
         const pcm = new Int16Array(inputData.length)
         for (let i = 0; i < inputData.length; i++) {
@@ -407,19 +439,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     }))
     console.log('[AriaLive] Sent text:', text.slice(0, 100))
     setState('thinking')
-
-    // Save user text to database
-    fetch(`${(process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000')}/api/aria/save-transcript`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(typeof window !== 'undefined' && localStorage.getItem('axis_token')
-          ? { Authorization: `Bearer ${localStorage.getItem('axis_token')}` }
-          : {}),
-      },
-      body: JSON.stringify({ sessionId, userText: text, ariaText: '' }),
-    }).catch(() => { /* non-critical */ })
-  }, [sessionId])
+    saveTranscript(text, '')
+  }, [sessionId, saveTranscript])
 
   // ─── Function call relay ──────────────────────────────────────
 
@@ -483,12 +504,14 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           resultData = result.result
         }
 
-        responses.push({ id, name, response: { result: resultData } })
-        setToolActivities((prev) =>
-          prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
-        )
+        responses.push({ id, name, response: { output: resultData } })
+        if (!name.startsWith('delegate_')) {
+          setToolActivities((prev) =>
+            prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
+          )
+        }
       } catch (err) {
-        responses.push({ id, name, response: { error: err instanceof Error ? err.message : 'Failed' } })
+        responses.push({ id, name, response: { output: { error: err instanceof Error ? err.message : 'Failed' } } })
         setToolActivities((prev) =>
           prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
         )
@@ -497,10 +520,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
     // Send function responses back to Gemini
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        toolResponse: { functionResponses: responses },
-      }))
+      const msg = { toolResponse: { functionResponses: responses } }
+      console.log('[AriaLive] Sending tool responses:', JSON.stringify(msg).slice(0, 300))
+      wsRef.current.send(JSON.stringify(msg))
     }
+    setState('thinking')
 
     onToolActivity?.(toolActivities)
   }, [sessionId, toolActivities, onToolActivity])
