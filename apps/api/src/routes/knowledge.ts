@@ -1,10 +1,42 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import multer from 'multer'
+import { fileTypeFromBuffer } from 'file-type'
 import { prisma } from '../lib/prisma.js'
 import { resolveConflictSchema } from '../lib/schemas.js'
 import { IngestionPipeline, SUPPORTED_MIME_TYPES } from '@axis/ingestion'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
+
+/** MIME types that are safe to ingest — must match magic bytes */
+const ALLOWED_MIME_TYPES = new Set(SUPPORTED_MIME_TYPES)
+
+/**
+ * Validate a file buffer's actual content against the declared MIME type.
+ * Returns null if valid, or an error string if the magic bytes don't match
+ * a supported type (prevents disguised .exe uploads with a PDF content-type).
+ */
+async function validateMagicBytes(buffer: Buffer, declaredMime: string): Promise<string | null> {
+  const detected = await fileTypeFromBuffer(buffer)
+
+  // file-type can't detect text/plain, text/markdown, text/csv — allow those through
+  if (!detected) {
+    const textTypes = ['text/plain', 'text/markdown', 'text/csv', 'application/json']
+    if (textTypes.includes(declaredMime)) return null
+    // Unknown binary format — reject
+    return `File content does not match a recognised format`
+  }
+
+  if (!ALLOWED_MIME_TYPES.has(detected.mime)) {
+    return `File content type '${detected.mime}' is not supported`
+  }
+
+  // Warn if declared MIME differs from detected (still allow — could be spec variation)
+  if (detected.mime !== declaredMime) {
+    console.warn(`[knowledge/upload] MIME mismatch: declared=${declaredMime}, detected=${detected.mime}`)
+  }
+
+  return null
+}
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 
@@ -30,6 +62,13 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
     const file = req.file
     if (!file) {
       res.status(400).json({ error: 'No file provided', code: 'NO_FILE', requestId: req.requestId })
+      return
+    }
+
+    // SEC-7: Validate file content against magic bytes, not just the declared MIME type.
+    const magicError = await validateMagicBytes(file.buffer, file.mimetype)
+    if (magicError) {
+      res.status(400).json({ error: magicError, code: 'INVALID_FILE_CONTENT', requestId: req.requestId })
       return
     }
 
