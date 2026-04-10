@@ -395,7 +395,7 @@ export class InfiniteMemory {
     }
   }
 
-  /** Tier 3: Search episodic memories via Prisma (text search, not vector) */
+  /** Tier 3: Search episodic memories via pgvector cosine similarity on AgentMemory.embedding */
   private async searchEpisodicMemory(
     query: string,
     userId: string,
@@ -404,43 +404,87 @@ export class InfiniteMemory {
   ): Promise<EpisodicMemory[]> {
     if (!this.prisma) return []
 
-    try {
-      // Simple text search on episodic memories
-      const memories = await this.prisma.agentMemory.findMany({
-        where: {
+    // Attempt vector search first; fall back to recency if embedding unavailable
+    const embedding = await this.embedText(query)
+    if (embedding) {
+      try {
+        const vectorStr = `[${embedding.join(',')}]`
+        // All user-controlled values are passed as numbered parameters — not concatenated.
+        // $1 = embedding vector (used in both ORDER BY and similarity projection)
+        // $2 = userId
+        // $3 = clientId (optional, only added when present)
+        const sql = `
+          SELECT id, user_id, client_id, content, tags, created_at,
+                 1 - (embedding <=> $1::vector) AS similarity
+          FROM agent_memories
+          WHERE user_id = $2
+            AND memory_type = 'EPISODIC'
+            ${clientId ? 'AND client_id = $3' : ''}
+            AND embedding IS NOT NULL
+          ORDER BY embedding <=> $1::vector
+          LIMIT 10`
+
+        const rows = await this.prisma.$queryRawUnsafe<Array<{
+          id: string
+          user_id: string
+          client_id: string | null
+          content: string
+          tags: unknown
+          created_at: Date
+          similarity: number
+        }>>(
+          sql,
+          vectorStr,
           userId,
-          memoryType: 'EPISODIC',
-          ...(clientId ? { clientId } : {}),
-        },
+          ...(clientId ? [clientId] : [])
+        ) as Array<{
+          id: string
+          user_id: string
+          client_id: string | null
+          content: string
+          tags: unknown
+          created_at: Date
+          similarity: number
+        }>
+
+        const SIMILARITY_FLOOR = 0.3
+        let tokensUsed = 0
+        const output: EpisodicMemory[] = []
+
+        for (const row of rows) {
+          if (row.similarity < SIMILARITY_FLOOR) continue
+          const tokens = estimateTokens(row.content)
+          if (tokensUsed + tokens > tokenBudget) break
+          output.push({
+            id: row.id,
+            userId: row.user_id,
+            clientId: row.client_id,
+            content: row.content,
+            tags: row.tags as string[],
+            createdAt: row.created_at.toISOString(),
+            similarity: row.similarity,
+          })
+          tokensUsed += tokens
+        }
+
+        if (output.length > 0) return output
+        // Fall through to recency-based fallback if no vector matches
+      } catch (err) {
+        console.warn('[InfiniteMemory] pgvector episodic search failed, using recency fallback:', err instanceof Error ? err.message : 'Unknown')
+      }
+    }
+
+    // Recency fallback: return most recent memories (used when no embeddings exist yet)
+    try {
+      const memories = await this.prisma.agentMemory.findMany({
+        where: { userId, memoryType: 'EPISODIC', ...(clientId ? { clientId } : {}) },
         orderBy: { createdAt: 'desc' },
-        take: 10,
+        take: 5,
       })
-
-      // Filter to relevant memories based on keyword overlap
-      const queryWords = new Set(query.toLowerCase().split(/\s+/).filter((w) => w.length > 3))
-      const scored = memories.map((m) => {
-        const contentWords = m.content.toLowerCase().split(/\s+/)
-        const overlap = contentWords.filter((w) => queryWords.has(w)).length
-        const tagOverlap = (m.tags as string[]).filter((t) =>
-          queryWords.has(t.toLowerCase())
-        ).length
-        return { memory: m, score: overlap + tagOverlap * 2 }
-      })
-
-      const relevant = scored
-        .filter((s) => s.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5)
-
-      // If no keyword matches, just return recent memories
-      const results = relevant.length > 0
-        ? relevant.map((s) => s.memory)
-        : memories.slice(0, 3)
 
       let tokensUsed = 0
       const output: EpisodicMemory[] = []
-
-      for (const m of results) {
+      for (const m of memories) {
         const tokens = estimateTokens(m.content)
         if (tokensUsed + tokens > tokenBudget) break
         output.push({
@@ -453,10 +497,41 @@ export class InfiniteMemory {
         })
         tokensUsed += tokens
       }
-
       return output
     } catch {
       return []
+    }
+  }
+
+  /**
+   * Embed text via Voyage AI for vector similarity search.
+   * Returns null if VOYAGE_API_KEY is not set or the call fails.
+   */
+  private async embedText(text: string): Promise<number[] | null> {
+    const voyageKey = process.env['VOYAGE_API_KEY']
+    if (!voyageKey) return null
+
+    try {
+      const response = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${voyageKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          input: [text],
+          model: 'voyage-3-lite',
+          input_type: 'query',
+        }),
+        signal: AbortSignal.timeout(5000),
+      })
+
+      if (!response.ok) return null
+
+      const data = await response.json() as { data: Array<{ embedding: number[] }> }
+      return data.data[0]?.embedding ?? null
+    } catch {
+      return null
     }
   }
 
