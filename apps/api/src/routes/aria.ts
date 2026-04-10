@@ -330,40 +330,41 @@ ariaRouter.get('/delegation-status', async (req: Request, res: Response) => {
       return
     }
 
-    // Find delegation results tagged with this session
-    // tags is a Json column, so we use raw SQL for array contains
-    const results = await prisma.agentMemory.findMany({
-      where: {
-        userId: req.userId!,
-        memoryType: 'EPISODIC',
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    })
-
-    // Filter client-side for session tag match (Json column limitation)
-    const sessionResults = results.filter((r) => {
-      const tags = r.tags as string[] | null
-      return tags?.includes(sessionId)
-    })
+    // Use Postgres JSON array contains to avoid O(N) client-side filtering
+    const sessionResults = await prisma.$queryRaw<Array<{
+      id: string
+      content: string
+      tags: unknown
+      created_at: Date
+    }>>`
+      SELECT id, content, tags, created_at
+      FROM agent_memories
+      WHERE user_id = ${req.userId!}
+        AND memory_type = 'EPISODIC'
+        AND tags @> ${JSON.stringify([sessionId])}::jsonb
+      ORDER BY created_at DESC
+      LIMIT 100
+    `
 
     // Parse which are delegation results
+    const WORKER_TYPES = ['product', 'process', 'competitive', 'stakeholder']
+    const WORKER_NAMES: Record<string, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
+
     const delegations = sessionResults
       .filter((r) => {
         const tags = r.tags as string[]
-        return tags.some((t) => ['product', 'process', 'competitive', 'stakeholder'].includes(t))
+        return tags.some((t) => WORKER_TYPES.includes(t))
       })
       .map((r) => {
         const tags = r.tags as string[]
-        const workerType = tags.find((t) => ['product', 'process', 'competitive', 'stakeholder'].includes(t)) ?? 'unknown'
-        const names: Record<string, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
+        const workerType = tags.find((t) => WORKER_TYPES.includes(t)) ?? 'unknown'
         return {
           id: r.id,
-          agent: names[workerType] ?? workerType,
+          agent: WORKER_NAMES[workerType] ?? workerType,
           workerType,
           status: 'completed' as const,
           result: r.content,
-          completedAt: r.createdAt.toISOString(),
+          completedAt: r.created_at.toISOString(),
         }
       })
 
