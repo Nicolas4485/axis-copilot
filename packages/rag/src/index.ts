@@ -1,11 +1,12 @@
 // RAG Engine — @axis/rag
-// Orchestrates query decomposition, hybrid retrieval, reranking,
+// Orchestrates query decomposition, hybrid retrieval, relevance scoring, reranking,
 // context compression, and citation tracking
 
 import { InferenceEngine } from '@axis/inference'
 import { Neo4jClient } from '@axis/knowledge-graph'
 import { QueryDecomposer } from './query-decomposer.js'
 import { HybridRetriever } from './hybrid-retriever.js'
+import { RelevanceScorer } from './relevance-scorer.js'
 import { Reranker } from './reranker.js'
 import { ContextCompressor } from './context-compressor.js'
 import { CitationTracker } from './citation-tracker.js'
@@ -27,6 +28,7 @@ export type {
 // Re-export components
 export { QueryDecomposer } from './query-decomposer.js'
 export { HybridRetriever } from './hybrid-retriever.js'
+export { RelevanceScorer } from './relevance-scorer.js'
 export { Reranker } from './reranker.js'
 export { ContextCompressor } from './context-compressor.js'
 export { CitationTracker } from './citation-tracker.js'
@@ -39,14 +41,16 @@ export type { MessageCitationMetadata } from './citation-tracker.js'
  * 1. Decompose query into vector + graph + temporal components
  * 2. Generate query embedding
  * 3. Parallel: vector search (pgvector) + graph traversal (Neo4j)
- * 4. Detect conflicts between sources
- * 5. Rerank with composite scoring
- * 6. Compress context to fit token budget
- * 7. Return context, citations, conflicts, graph insights
+ * 4. Score chunks for relevance to query (binary classifier)
+ * 5. Detect conflicts between sources
+ * 6. Rerank with composite scoring
+ * 7. Compress context to fit token budget
+ * 8. Return context, citations, conflicts, graph insights
  */
 export class RAGEngine {
   private decomposer: QueryDecomposer
   private retriever: HybridRetriever
+  private relevanceScorer: RelevanceScorer
   private reranker: Reranker
   private compressor: ContextCompressor
   private citationTracker: CitationTracker
@@ -63,6 +67,7 @@ export class RAGEngine {
       neo4jClient: options.neo4jClient,
       prisma: options.prisma,
     })
+    this.relevanceScorer = new RelevanceScorer(this.engine)
     this.reranker = new Reranker()
     this.compressor = new ContextCompressor()
     this.citationTracker = new CitationTracker()
@@ -98,24 +103,29 @@ export class RAGEngine {
     const queryEmbedding = await this.embedQuery(userQuery)
 
     // Step 3: Parallel vector + graph retrieval
-    const { chunks, graphInsights } = await this.retriever.retrieve(
+    let { chunks, graphInsights } = await this.retriever.retrieve(
       decomposed,
       userId,
       clientId,
       queryEmbedding
     )
 
-    // Step 4: Detect conflicts between retrieved chunks
+    // Step 4: Score chunks for passage-level relevance
+    const relevantChunks = await this.relevanceScorer.scoreChunks(userQuery, chunks)
+    console.log(`[RAGEngine] Relevance scoring: ${chunks.length} → ${relevantChunks.length} chunks`)
+    chunks = relevantChunks
+
+    // Step 5: Detect conflicts between retrieved chunks
     const conflicts = this.detectConflicts(chunks)
 
-    // Step 5: Rerank with composite scoring
+    // Step 6: Rerank with composite scoring
     const rankedChunks = this.reranker.rerank(chunks, {
       targetClientId: clientId,
       conflicts,
       limit: maxChunks,
     })
 
-    // Step 6: Compress context to fit token budget
+    // Step 7: Compress context to fit token budget
     const { context, citations, tokensUsed } = this.compressor.compress(
       rankedChunks,
       graphInsights,
