@@ -70,9 +70,12 @@ export class InferenceEngine {
     const systemPrompt = getPromptText(options.systemPromptKey)
     const maxTokens = options.maxTokens ?? route.maxTokens
 
-    // All tasks route through Anthropic
+    // All tasks route through Anthropic (with optional Opus advisor for complex tasks)
     const claudeModel = route.claudeModel
-    return this.executeClaude(task, claudeModel, systemPrompt, options, maxTokens)
+    return this.executeClaude(task, claudeModel, systemPrompt, {
+      ...options,
+      ...(route.advisor ? { advisor: route.advisor, advisorMaxUses: route.advisorMaxUses } : {}),
+    }, maxTokens)
   }
 
   /**
@@ -224,9 +227,11 @@ Message: ${message}`,
     systemPrompt: string,
     options: {
       messages: InferenceMessage[]
-      tools?: ToolDefinition[]
-      sessionId?: string
-      userId?: string
+      tools?: ToolDefinition[] | undefined
+      sessionId?: string | undefined
+      userId?: string | undefined
+      advisor?: ClaudeModel | undefined
+      advisorMaxUses?: number | undefined
     },
     maxTokens: number
   ): Promise<InferenceResponse> {
@@ -238,6 +243,7 @@ Message: ${message}`,
       task,
       ...(options.sessionId ? { sessionId: options.sessionId } : {}),
       ...(options.userId ? { userId: options.userId } : {}),
+      ...(options.advisor ? { advisor: options.advisor, advisorMaxUses: options.advisorMaxUses } : {}),
     })
   }
 

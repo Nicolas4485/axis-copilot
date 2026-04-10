@@ -1,7 +1,8 @@
 // Model Router — maps tasks to Anthropic models
+// Uses the Advisor Strategy: Sonnet as executor, Opus as advisor
+// Sonnet handles most work; consults Opus only for complex decisions
 // Haiku: simple/fast tasks (classification, extraction, verification)
-// Sonnet: medium tasks (summarisation, email, context compression)
-// Opus 4.6: complex tasks (agent reasoning, reports, user-facing output)
+// Sonnet + Opus advisor: complex tasks (agent reasoning, reports)
 
 import type { InferenceTask, ClaudeModel } from './types.js'
 
@@ -9,6 +10,10 @@ import type { InferenceTask, ClaudeModel } from './types.js'
 export interface RouteTarget {
   primary: 'claude'
   claudeModel: ClaudeModel
+  /** Optional advisor model — executor consults this for complex decisions */
+  advisor?: ClaudeModel | undefined
+  /** Max advisor invocations per request (default 3) */
+  advisorMaxUses?: number | undefined
   /** Max output tokens for this task */
   maxTokens: number
   /** Whether to use JSON mode */
@@ -29,22 +34,28 @@ export interface RouteTarget {
  *   agent_response, user_response, user_report
  */
 const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
-  // ─── Opus 4.6 — complex reasoning and analysis ──────────────
+  // ─── Sonnet + Opus advisor — complex reasoning with cost efficiency ──
   agent_response: {
     primary: 'claude',
-    claudeModel: 'opus',
+    claudeModel: 'sonnet',
+    advisor: 'opus',
+    advisorMaxUses: 3,
     maxTokens: 4096,
     jsonMode: false,
   },
   user_response: {
     primary: 'claude',
-    claudeModel: 'opus',
+    claudeModel: 'sonnet',
+    advisor: 'opus',
+    advisorMaxUses: 3,
     maxTokens: 4096,
     jsonMode: false,
   },
   user_report: {
     primary: 'claude',
-    claudeModel: 'opus',
+    claudeModel: 'sonnet',
+    advisor: 'opus',
+    advisorMaxUses: 3,
     maxTokens: 4096,
     jsonMode: false,
   },

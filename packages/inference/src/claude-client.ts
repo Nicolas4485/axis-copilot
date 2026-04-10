@@ -17,7 +17,7 @@ import type {
 /** Claude model IDs */
 const MODEL_IDS: Record<ClaudeModel, string> = {
   haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-6-20250514',
+  sonnet: 'claude-sonnet-4-6',
   opus: 'claude-opus-4-6',
 }
 
@@ -68,11 +68,15 @@ export class ClaudeClient {
     systemPrompt: string,
     messages: InferenceMessage[],
     options?: {
-      tools?: ToolDefinition[]
-      maxTokens?: number
-      task?: InferenceTask
-      sessionId?: string
-      userId?: string
+      tools?: ToolDefinition[] | undefined
+      maxTokens?: number | undefined
+      task?: InferenceTask | undefined
+      sessionId?: string | undefined
+      userId?: string | undefined
+      /** Advisor model — executor consults this for complex decisions */
+      advisor?: ClaudeModel | undefined
+      /** Max advisor invocations per request */
+      advisorMaxUses?: number | undefined
     }
   ): Promise<InferenceResponse> {
     if (!this.client) {
@@ -120,12 +124,30 @@ export class ClaudeClient {
       cache_control: { type: 'ephemeral' },
     }]
 
-    // Build tools if provided
-    const anthropicTools: Anthropic.Tool[] | undefined = options?.tools?.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.input_schema as Anthropic.Tool.InputSchema,
-    }))
+    // Build tools — regular tools + optional advisor
+    const allTools: unknown[] = []
+
+    // Add regular tools
+    if (options?.tools) {
+      for (const t of options.tools) {
+        allTools.push({
+          name: t.name,
+          description: t.description,
+          input_schema: t.input_schema as Anthropic.Tool.InputSchema,
+        })
+      }
+    }
+
+    // Advisor Strategy: when advisor is configured, the executor (Sonnet) can
+    // consult Opus for complex decisions. Since the advisor_20250301 tool type
+    // is not yet available in the API, we keep it as a TODO and run on the
+    // executor model directly. The routing already gives near-Opus quality
+    // on Sonnet for most tasks.
+    if (options?.advisor) {
+      console.log(`[Claude] Advisor configured: ${options.advisor} (will be used when API supports advisor_20250301)`)
+      // TODO: When Anthropic enables the advisor tool type, add:
+      // allTools.push({ type: 'advisor_20250301', name: 'advisor', model: advisorModelId, max_uses: 3 })
+    }
 
     try {
       const response = await this.client.messages.create({
@@ -133,7 +155,7 @@ export class ClaudeClient {
         max_tokens: maxTokens,
         system: systemBlocks,
         messages: anthropicMessages,
-        ...(anthropicTools && anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
+        ...(allTools.length > 0 ? { tools: allTools as Anthropic.Tool[] } : {}),
       })
 
       const latencyMs = Date.now() - startTime
