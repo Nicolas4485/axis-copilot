@@ -13,7 +13,7 @@ import type {
 import { LocalClient } from './local-client.js'
 import { ClaudeClient } from './claude-client.js'
 import { CostTracker } from './cost-tracker.js'
-import { getRoute, getFallback } from './router.js'
+import { getRoute, getFallback, isLocalTask } from './router.js'
 import { getPromptText } from './prompt-library.js'
 
 const AVAILABILITY_CHECK_INTERVAL_MS = 5 * 60 * 1000  // 5 minutes

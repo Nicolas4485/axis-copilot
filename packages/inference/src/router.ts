@@ -154,6 +154,11 @@ export function isLocalTask(task: InferenceTask): boolean {
   return ROUTING_TABLE[task].primary === 'local'
 }
 
+/** @deprecated Use isLocalTask() instead */
+export function hasFallback(task: InferenceTask): boolean {
+  return isLocalTask(task)
+}
+
 /**
  * Get the Haiku fallback for local tasks when Ollama is unavailable.
  * Returns null for cloud-only tasks (no fallback needed).
