@@ -152,7 +152,9 @@ export interface SessionCost {
 }
 
 export const health = {
-  check: () => request<HealthStatus>('/api/health'),
+  // Calls the authenticated detailed endpoint so the UI gets per-service status.
+  // /api/health (public) only returns { status } to avoid leaking infra details.
+  check: () => request<HealthStatus>('/api/health/detailed'),
 }
 
 // ─── Knowledge ────────────────────────────────────────────────
