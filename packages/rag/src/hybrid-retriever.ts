@@ -98,8 +98,19 @@ export class HybridRetriever {
         const params: unknown[] = [vectorStr, userId, VECTOR_SIMILARITY_THRESHOLD]
 
         if (clientId) {
-          sql += ` AND kd.client_id = $4`
+          sql += ` AND kd.client_id = $${params.length + 1}`
           params.push(clientId)
+        }
+
+        // Temporal filter — applied to document_chunks.created_at (timestamptz)
+        // Uses parameterized placeholders to prevent SQL injection
+        if (query.temporalFilter?.after !== undefined) {
+          sql += ` AND dc.created_at >= $${params.length + 1}::timestamptz`
+          params.push(query.temporalFilter.after)
+        }
+        if (query.temporalFilter?.before !== undefined) {
+          sql += ` AND dc.created_at <= $${params.length + 1}::timestamptz`
+          params.push(query.temporalFilter.before)
         }
 
         sql += ` ORDER BY similarity DESC LIMIT $${params.length + 1}`
