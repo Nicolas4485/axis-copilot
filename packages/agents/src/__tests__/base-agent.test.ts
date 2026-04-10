@@ -113,6 +113,8 @@ describe('BaseAgent.run', () => {
           valueB: '$15M',
           sourceA: 'doc-1',
           sourceB: 'doc-2',
+          sourceValue: '$10M',
+          conflictingValue: '$15M',
         }],
       }),
     })

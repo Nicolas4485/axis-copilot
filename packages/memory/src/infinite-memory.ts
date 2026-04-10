@@ -9,7 +9,7 @@
 // buildAgentContext() assembles <= 6000 tokens from all tiers.
 
 import type { PrismaClient } from '@prisma/client'
-import Redis from 'ioredis'
+import { Redis } from 'ioredis'
 import { InferenceEngine } from '@axis/inference'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 
