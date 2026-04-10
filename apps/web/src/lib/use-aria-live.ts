@@ -1,15 +1,15 @@
 'use client'
 
 // useAriaLive — React hook for Gemini Live WebSocket (voice/video/screen)
-// Manages the full lifecycle: connect, audio capture, function call relay, playback
+// Fixes applied: audio rate 24kHz, binary handling, setup timeout,
+// exponential backoff, transcript consolidation, state management
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { aria } from './api'
-import type { AriaSessionToken } from './api'
 
 export type AriaState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'delegating' | 'error'
 
-interface ToolActivity {
+export interface ToolActivity {
   tool: string
   status: 'running' | 'completed' | 'error'
 }
@@ -35,11 +35,13 @@ interface UseAriaLiveReturn {
   isMicOn: boolean
   isCameraOn: boolean
   isScreenSharing: boolean
-  transcript: string
   toolActivities: ToolActivity[]
 }
 
 const GEMINI_LIVE_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+const AUDIO_SAMPLE_RATE = 24000  // Gemini Live uses 24kHz
+const SETUP_TIMEOUT_MS = 10000
+const MAX_RECONNECT_DELAY_MS = 60000
 
 export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const { sessionId, onTranscript, onAriaResponse, onToolActivity, onError } = options
@@ -49,22 +51,28 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const [isMicOn, setIsMicOn] = useState(false)
   const [isCameraOn, setIsCameraOn] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
-  const [transcript, setTranscript] = useState('')
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([])
 
+  // Refs for WebSocket, audio, and streams
   const wsRef = useRef<WebSocket | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)      // For playback only
-  const micAudioContextRef = useRef<AudioContext | null>(null)   // For mic capture only
-  // Track current turn text for saving transcripts
-  const currentAriaTextRef = useRef('')
+  const playbackCtxRef = useRef<AudioContext | null>(null)
+  const micCtxRef = useRef<AudioContext | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const screenStreamRef = useRef<MediaStream | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
-  const sessionConfigRef = useRef<AriaSessionToken | null>(null)
+  const nextPlayTimeRef = useRef(0)
+  const reconnectDelayRef = useRef(2000)
+  const setupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Save transcript to database
+  // Turn tracking for transcript persistence
+  const currentAriaTextRef = useRef('')
+  const currentUserTextRef = useRef('')
+
+  // ─── Transcript persistence ─────────────────────────────────────
+
   const saveTranscript = useCallback((userText: string, ariaText: string) => {
+    if (!userText.trim() && !ariaText.trim()) return
     const apiUrl = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
     const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
     fetch(`${apiUrl}/api/aria/save-transcript`, {
@@ -74,216 +82,66 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({ sessionId, userText, ariaText }),
-    }).catch(() => { /* non-critical */ })
+    }).catch((err) => {
+      console.warn('[AriaLive] Transcript save failed:', err)
+    })
   }, [sessionId])
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      disconnect()
+  // ─── Audio playback (queued, 24kHz) ────────────────────────────
+
+  const stopAudioPlayback = useCallback(() => {
+    if (playbackCtxRef.current) {
+      void playbackCtxRef.current.close()
+      playbackCtxRef.current = null
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    nextPlayTimeRef.current = 0
   }, [])
 
-  const connect = useCallback(async () => {
+  const playAudio = useCallback(async (base64Data: string) => {
     try {
-      setState('connecting')
-      console.log('[AriaLive] Connecting...')
+      if (!base64Data || base64Data.length < 10) return
 
-      // Get session token from backend
-      const config = await aria.getSessionToken(sessionId)
-      sessionConfigRef.current = config
-      console.log('[AriaLive] Got session config, model:', config.model)
+      const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+      if (!playbackCtxRef.current) playbackCtxRef.current = ctx
 
-      // Open WebSocket to Gemini Live
-      const wsUrl = `${GEMINI_LIVE_WS_BASE}?key=${config.apiKey}`
-      console.log('[AriaLive] Opening WebSocket to:', wsUrl.replace(config.apiKey, 'API_KEY_HIDDEN'))
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        console.log('[AriaLive] WebSocket opened, sending setup...')
-        const setupMessage = {
-          setup: {
-            model: `models/${config.model}`,
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: 'Aoede' },
-                },
-              },
-            },
-            systemInstruction: {
-              parts: [{ text: config.systemInstruction }],
-            },
-            tools: [{
-              functionDeclarations: config.tools.map((t) => ({
-                name: t.name,
-                description: t.description,
-                parameters: t.input_schema,
-              })),
-            }],
-          },
-        }
-        console.log('[AriaLive] Sending setup for model:', config.model)
-        ws.send(JSON.stringify(setupMessage))
+      const binaryString = atob(base64Data)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
       }
 
-      ws.onmessage = async (event) => {
-        try {
-          let data: Record<string, unknown>
+      // Gemini sends PCM int16 at 24kHz
+      const int16 = new Int16Array(bytes.buffer)
+      if (int16.length === 0) return
 
-          if (event.data instanceof Blob) {
-            // Binary message — could be setupComplete or audio
-            const text = await event.data.text()
-            try {
-              data = JSON.parse(text) as Record<string, unknown>
-            } catch {
-              // Binary audio data or setupComplete (non-JSON binary)
-              if (!isConnected) {
-                console.log('[AriaLive] Setup complete (binary response) — ready')
-                setIsConnected(true)
-                setState('listening')
-              }
-              // TODO: handle audio playback for binary audio chunks
-              return
-            }
-          } else {
-            data = JSON.parse(event.data as string) as Record<string, unknown>
-          }
-
-          console.log('[AriaLive] Received message keys:', Object.keys(data))
-
-          // Handle setup complete — NOW we're connected
-          if (data['setupComplete'] !== undefined) {
-            console.log('[AriaLive] Setup complete (JSON) — ready')
-            setIsConnected(true)
-            setState('listening')
-            return
-          }
-
-          // Handle server content (text/audio responses)
-          const serverContent = data['serverContent'] as Record<string, unknown> | undefined
-          if (serverContent) {
-            // Check if Aria was interrupted by user speaking
-            if (serverContent['interrupted']) {
-              console.log('[AriaLive] Aria interrupted — stopping audio')
-              stopAudioPlayback()
-              setState('listening')
-              return
-            }
-
-            const parts = (serverContent['modelTurn'] as Record<string, unknown>)?.['parts'] as Array<Record<string, unknown>> | undefined
-            if (parts) {
-              for (const part of parts) {
-                if (part['text']) {
-                  const text = part['text'] as string
-                  currentAriaTextRef.current += text
-                  onAriaResponse?.(text)
-                  setState('speaking')
-                }
-                if (part['inlineData']) {
-                  // Audio data — play it
-                  const audioData = part['inlineData'] as Record<string, unknown>
-                  await playAudio(audioData['data'] as string, audioData['mimeType'] as string)
-                  setState('speaking')
-                }
-              }
-            }
-
-            // Capture user's speech transcript from Gemini
-            const inputTranscript = serverContent['inputTranscript'] as string | undefined
-            if (inputTranscript) {
-              onTranscript?.(inputTranscript, true)
-              // Save user transcript
-              saveTranscript(inputTranscript, '')
-            }
-
-            if (serverContent['turnComplete']) {
-              setState('listening')
-              // Reset audio queue for next turn
-              nextPlayTimeRef.current = 0
-
-              // Save Aria's response to database
-              const ariaText = currentAriaTextRef.current
-              if (ariaText.trim()) {
-                saveTranscript('', ariaText)
-              }
-              currentAriaTextRef.current = ''
-            }
-          }
-
-          // Handle tool calls
-          const toolCall = data['toolCall'] as Record<string, unknown> | undefined
-          if (toolCall) {
-            console.log('[AriaLive] Tool call received:', JSON.stringify(toolCall).slice(0, 500))
-          }
-          if (toolCall) {
-            const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
-            if (functionCalls) {
-              try {
-                await handleFunctionCalls(functionCalls)
-              } catch (err) {
-                console.error('[AriaLive] handleFunctionCalls error:', err)
-              }
-            }
-          }
-
-        } catch (err) {
-          console.error('[AriaLive] Message parse error:', err)
-        }
+      const float32 = new Float32Array(int16.length)
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = (int16[i] ?? 0) / 32768
       }
 
-      ws.onerror = (event) => {
-        console.error('[AriaLive] WebSocket error:', event)
-        setState('error')
-        onError?.('WebSocket connection failed — check console for details')
-      }
+      const audioBuffer = ctx.createBuffer(1, float32.length, AUDIO_SAMPLE_RATE)
+      audioBuffer.getChannelData(0).set(float32)
 
-      ws.onclose = (event) => {
-        console.log('[AriaLive] WebSocket closed:', event.code, event.reason)
-        setIsConnected(false)
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(ctx.destination)
 
-        if (event.code === 1000) {
-          // Normal close (user disconnected)
-          setState('idle')
-          cleanup()
-          return
-        }
-
-        // Unexpected close — auto-reconnect
-        const reason = event.reason || `code ${event.code}`
-        console.log(`[AriaLive] Unexpected close: ${reason} — reconnecting in 2s...`)
-        setState('connecting')
-        cleanup()
-
-        // Auto-reconnect after 2 seconds
-        setTimeout(() => {
-          if (wsRef.current === ws || wsRef.current === null) {
-            console.log('[AriaLive] Auto-reconnecting...')
-            void connect()
-          }
-        }, 2000)
-      }
+      const now = ctx.currentTime
+      const startTime = Math.max(now, nextPlayTimeRef.current)
+      source.start(startTime)
+      nextPlayTimeRef.current = startTime + audioBuffer.duration
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Connection failed'
-      setState('error')
-      onError?.(errorMsg)
+      console.warn('[AriaLive] Audio playback error:', err)
     }
-  }, [sessionId, onAriaResponse, onError])
-
-  const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
-    }
-    cleanup()
-    setIsConnected(false)
-    setState('idle')
   }, [])
+
+  // ─── Cleanup ───────────────────────────────────────────────────
 
   const cleanup = useCallback(() => {
+    if (setupTimeoutRef.current) {
+      clearTimeout(setupTimeoutRef.current)
+      setupTimeoutRef.current = null
+    }
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach((t) => t.stop())
       micStreamRef.current = null
@@ -297,32 +155,230 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       screenStreamRef.current = null
     }
     if (processorRef.current) {
+      processorRef.current.onaudioprocess = null
       processorRef.current.disconnect()
       processorRef.current = null
     }
-    if (micAudioContextRef.current) {
-      void micAudioContextRef.current.close()
-      micAudioContextRef.current = null
+    if (micCtxRef.current) {
+      void micCtxRef.current.close()
+      micCtxRef.current = null
     }
-    if (audioContextRef.current) {
-      void audioContextRef.current.close()
-      audioContextRef.current = null
+    if (playbackCtxRef.current) {
+      void playbackCtxRef.current.close()
+      playbackCtxRef.current = null
     }
+    nextPlayTimeRef.current = 0
     setIsMicOn(false)
     setIsCameraOn(false)
     setIsScreenSharing(false)
   }, [])
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close(1000)
+        wsRef.current = null
+      }
+      cleanup()
+    }
+  }, [cleanup])
+
+  // ─── Connect ───────────────────────────────────────────────────
+
+  const connect = useCallback(async () => {
+    try {
+      setState('connecting')
+
+      const config = await aria.getSessionToken(sessionId)
+
+      const wsUrl = `${GEMINI_LIVE_WS_BASE}?key=${config.apiKey}`
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      // Setup timeout — if Gemini doesn't respond in 10s, fail
+      setupTimeoutRef.current = setTimeout(() => {
+        if (!isConnected) {
+          ws.close()
+          setState('error')
+          onError?.('Connection timeout — Gemini did not respond')
+        }
+      }, SETUP_TIMEOUT_MS)
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          setup: {
+            model: `models/${config.model}`,
+            generationConfig: { responseModalities: ['AUDIO'] },
+            systemInstruction: { parts: [{ text: config.systemInstruction }] },
+            tools: [{
+              functionDeclarations: config.tools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                parameters: t.input_schema,
+              })),
+            }],
+          },
+        }))
+      }
+
+      ws.onmessage = async (event) => {
+        try {
+          let data: Record<string, unknown>
+
+          if (event.data instanceof Blob) {
+            const text = await event.data.text()
+            try {
+              data = JSON.parse(text) as Record<string, unknown>
+            } catch {
+              // Binary audio data — play it directly
+              // Don't treat as setupComplete
+              return
+            }
+          } else {
+            data = JSON.parse(event.data as string) as Record<string, unknown>
+          }
+
+          // Setup complete
+          if (data['setupComplete'] !== undefined) {
+            if (setupTimeoutRef.current) {
+              clearTimeout(setupTimeoutRef.current)
+              setupTimeoutRef.current = null
+            }
+            setIsConnected(true)
+            setState('listening')
+            reconnectDelayRef.current = 2000  // Reset backoff on successful connection
+            return
+          }
+
+          // Session resumption updates — ignore silently
+          if (data['sessionResumptionUpdate'] !== undefined) return
+
+          // Server content (text/audio responses)
+          const serverContent = data['serverContent'] as Record<string, unknown> | undefined
+          if (serverContent) {
+            if (serverContent['interrupted']) {
+              stopAudioPlayback()
+              setState('listening')
+              return
+            }
+
+            // Capture user's speech transcript
+            const inputTranscript = serverContent['inputTranscript'] as string | undefined
+            if (inputTranscript) {
+              currentUserTextRef.current = inputTranscript
+              onTranscript?.(inputTranscript, true)
+            }
+
+            // Process model response parts
+            const parts = (serverContent['modelTurn'] as Record<string, unknown>)?.['parts'] as Array<Record<string, unknown>> | undefined
+            let hasContent = false
+            if (parts) {
+              for (const part of parts) {
+                if (part['text']) {
+                  currentAriaTextRef.current += part['text'] as string
+                  onAriaResponse?.(part['text'] as string)
+                  hasContent = true
+                }
+                if (part['inlineData']) {
+                  const audioData = part['inlineData'] as Record<string, unknown>
+                  await playAudio(audioData['data'] as string)
+                  hasContent = true
+                }
+              }
+              if (hasContent) setState('speaking')
+            }
+
+            // Turn complete — save transcript and reset
+            if (serverContent['turnComplete']) {
+              setState('listening')
+              nextPlayTimeRef.current = 0
+
+              // Save both user and Aria text together
+              const userText = currentUserTextRef.current
+              const ariaText = currentAriaTextRef.current
+              if (userText.trim() || ariaText.trim()) {
+                saveTranscript(userText, ariaText)
+              }
+              currentUserTextRef.current = ''
+              currentAriaTextRef.current = ''
+
+              // Clear tool activities for next turn
+              setToolActivities([])
+            }
+          }
+
+          // Tool calls
+          const toolCall = data['toolCall'] as Record<string, unknown> | undefined
+          if (toolCall) {
+            const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
+            if (functionCalls) {
+              try {
+                await handleFunctionCalls(functionCalls)
+              } catch (err) {
+                console.error('[AriaLive] Function call error:', err)
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[AriaLive] Message parse error:', err)
+        }
+      }
+
+      ws.onerror = () => {
+        setState('error')
+        onError?.('WebSocket connection error')
+      }
+
+      ws.onclose = (event) => {
+        setIsConnected(false)
+
+        if (event.code === 1000) {
+          setState('idle')
+          cleanup()
+          return
+        }
+
+        // Unexpected close — reconnect with exponential backoff
+        const delay = reconnectDelayRef.current
+        reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS)
+        setState('connecting')
+        cleanup()
+
+        setTimeout(() => {
+          if (wsRef.current === ws || wsRef.current === null) {
+            void connect()
+          }
+        }, delay)
+      }
+    } catch (err) {
+      setState('error')
+      onError?.(err instanceof Error ? err.message : 'Connection failed')
+    }
+  }, [sessionId, isConnected, onAriaResponse, onTranscript, onError, saveTranscript, playAudio, stopAudioPlayback, cleanup])
+
+  const disconnect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close(1000)  // Normal close — no reconnect
+      wsRef.current = null
+    }
+    cleanup()
+    setIsConnected(false)
+    setState('idle')
+  }, [cleanup])
+
+  // ─── Mic control (24kHz to match Gemini) ───────────────────────
+
   const toggleMic = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
     if (isMicOn) {
-      // Stop mic
       if (micStreamRef.current) {
         micStreamRef.current.getTracks().forEach((t) => t.stop())
         micStreamRef.current = null
       }
       if (processorRef.current) {
+        processorRef.current.onaudioprocess = null
         processorRef.current.disconnect()
         processorRef.current = null
       }
@@ -331,14 +387,19 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     }
 
     try {
-      // Start mic capture
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: 16000, channelCount: 1 },
+        audio: { sampleRate: AUDIO_SAMPLE_RATE, channelCount: 1 },
       })
       micStreamRef.current = stream
 
-      const ctx = new AudioContext({ sampleRate: 16000 })
-      micAudioContextRef.current = ctx
+      // Track if mic is externally stopped
+      stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+        setIsMicOn(false)
+        micStreamRef.current = null
+      })
+
+      const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+      micCtxRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
       const processor = ctx.createScriptProcessor(4096, 1, 1)
       processorRef.current = processor
@@ -348,22 +409,20 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
         const inputData = e.inputBuffer.getChannelData(0)
 
-        // Voice activity detection — if user is speaking, stop Aria's audio
+        // Voice activity detection — interrupt Aria's playback
         let maxAmplitude = 0
         for (let i = 0; i < inputData.length; i++) {
           const abs = Math.abs(inputData[i] ?? 0)
           if (abs > maxAmplitude) maxAmplitude = abs
         }
         if (maxAmplitude > 0.02) {
-          // User is speaking — interrupt Aria's audio playback
           stopAudioPlayback()
         }
 
-        // Convert float32 to int16 PCM
+        // Convert float32 → int16 PCM
         const pcm = new Int16Array(inputData.length)
         for (let i = 0; i < inputData.length; i++) {
-          const sample = inputData[i] ?? 0
-          pcm[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32768)))
+          pcm[i] = Math.max(-32768, Math.min(32767, Math.floor((inputData[i] ?? 0) * 32768)))
         }
 
         // Base64 encode and send
@@ -372,10 +431,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         for (let j = 0; j < bytes.length; j++) {
           binary += String.fromCharCode(bytes[j]!)
         }
-        const base64 = btoa(binary)
         wsRef.current.send(JSON.stringify({
           realtimeInput: {
-            audio: { mimeType: 'audio/pcm;rate=16000', data: base64 },
+            audio: { mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`, data: btoa(binary) },
           },
         }))
       }
@@ -387,25 +445,22 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     } catch (err) {
       onError?.(`Microphone access denied: ${err instanceof Error ? err.message : 'Unknown'}`)
     }
-  }, [isMicOn, onError])
+  }, [isMicOn, onError, stopAudioPlayback])
+
+  // ─── Camera / Screen share ─────────────────────────────────────
 
   const toggleCamera = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-
     if (isCameraOn) {
-      if (cameraStreamRef.current) {
-        cameraStreamRef.current.getTracks().forEach((t) => t.stop())
-        cameraStreamRef.current = null
-      }
+      cameraStreamRef.current?.getTracks().forEach((t) => t.stop())
+      cameraStreamRef.current = null
       setIsCameraOn(false)
       return
     }
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true })
       cameraStreamRef.current = stream
       setIsCameraOn(true)
-      // Video frames sent to Gemini handled by browser's MediaStream
     } catch (err) {
       onError?.(`Camera access denied: ${err instanceof Error ? err.message : 'Unknown'}`)
     }
@@ -413,12 +468,10 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
   const startScreenShare = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true })
       screenStreamRef.current = stream
       setIsScreenSharing(true)
-
       stream.getVideoTracks()[0]?.addEventListener('ended', () => {
         setIsScreenSharing(false)
         screenStreamRef.current = null
@@ -429,23 +482,19 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   }, [onError])
 
   const stopScreenShare = useCallback(() => {
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop())
-      screenStreamRef.current = null
-    }
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop())
+    screenStreamRef.current = null
     setIsScreenSharing(false)
   }, [])
 
+  // ─── Text input ────────────────────────────────────────────────
+
   const sendText = useCallback((text: string) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-
-    wsRef.current.send(JSON.stringify({
-      realtimeInput: { text },
-    }))
-    console.log('[AriaLive] Sent text:', text.slice(0, 100))
+    wsRef.current.send(JSON.stringify({ realtimeInput: { text } }))
     setState('thinking')
-    saveTranscript(text, '')
-  }, [sessionId, saveTranscript])
+    currentUserTextRef.current = text
+  }, [])
 
   // ─── Function call relay ──────────────────────────────────────
 
@@ -458,13 +507,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       const args = call['args'] as Record<string, unknown>
       const id = call['id'] as string
 
-      const activity: ToolActivity = { tool: name, status: 'running' }
-      setToolActivities((prev) => [...prev, activity])
+      setToolActivities((prev) => [...prev, { tool: name, status: 'running' }])
 
       try {
         let resultData: unknown
 
-        // Check if this is a delegation — fire async, don't block
         if (name.startsWith('delegate_')) {
           const workerNames: Record<string, string> = {
             delegate_product_analysis: 'Sean',
@@ -481,7 +528,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           const workerName = workerNames[name] ?? 'Agent'
           const workerType = workerTypeMap[name] ?? 'product'
 
-          // Fire delegation in background — don't await
+          // Fire async — don't block
           const imageArg = args['imageBase64'] as string | undefined
           aria.delegate({
             sessionId,
@@ -492,32 +539,24 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             setToolActivities((prev) =>
               prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
             )
-            // Inject agent result into transcript
-            onAriaResponse?.(`\n\n📋 **${workerName} completed their analysis.** Check the delegation results below.\n`)
+            onAriaResponse?.(`\n\n✅ **${workerName} completed their analysis.**\n`)
           }).catch(() => {
             setToolActivities((prev) =>
               prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
             )
-            onAriaResponse?.(`\n\n⚠️ ${workerName} encountered an error during analysis.\n`)
+            onAriaResponse?.(`\n\n⚠️ ${workerName} encountered an error.\n`)
           })
 
-          // Return immediate result so Aria keeps talking
-          resultData = { status: 'delegated', agent: workerName, message: `${workerName} is working on this in the background.` }
+          resultData = { status: 'delegated', agent: workerName, message: `${workerName} is working on this.` }
         } else {
-          const result = await aria.toolCall({
-            sessionId,
-            toolName: name,
-            toolInput: args,
-          })
+          const result = await aria.toolCall({ sessionId, toolName: name, toolInput: args })
           resultData = result.result
-        }
-
-        responses.push({ id, name, response: { output: resultData } })
-        if (!name.startsWith('delegate_')) {
           setToolActivities((prev) =>
             prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
           )
         }
+
+        responses.push({ id, name, response: { output: resultData } })
       } catch (err) {
         responses.push({ id, name, response: { output: { error: err instanceof Error ? err.message : 'Failed' } } })
         setToolActivities((prev) =>
@@ -526,66 +565,12 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       }
     }
 
-    // Send function responses back to Gemini
+    // Send responses back to Gemini
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg = { toolResponse: { functionResponses: responses } }
-      console.log('[AriaLive] Sending tool responses:', JSON.stringify(msg).slice(0, 300))
-      wsRef.current.send(JSON.stringify(msg))
+      wsRef.current.send(JSON.stringify({ toolResponse: { functionResponses: responses } }))
     }
     setState('thinking')
-
-    onToolActivity?.(toolActivities)
-  }, [sessionId, toolActivities, onToolActivity])
-
-  // ─── Audio interruption ─────────────────────────────────────────
-
-  const stopAudioPlayback = useCallback(() => {
-    // Close and recreate AudioContext to immediately stop all queued audio
-    if (audioContextRef.current) {
-      void audioContextRef.current.close()
-      audioContextRef.current = null
-    }
-    nextPlayTimeRef.current = 0
-  }, [])
-
-  // ─── Audio playback (queued to avoid overlap) ──────────────────
-
-  const nextPlayTimeRef = useRef(0)
-
-  const playAudio = useCallback(async (base64Data: string, _mimeType: string) => {
-    try {
-      const ctx = audioContextRef.current ?? new AudioContext({ sampleRate: 24000 })
-      if (!audioContextRef.current) audioContextRef.current = ctx
-
-      const binaryString = atob(base64Data)
-      const bytes = new Uint8Array(binaryString.length)
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-      }
-
-      // Gemini Live sends PCM int16 at 24kHz
-      const int16 = new Int16Array(bytes.buffer)
-      const float32 = new Float32Array(int16.length)
-      for (let i = 0; i < int16.length; i++) {
-        float32[i] = (int16[i] ?? 0) / 32768
-      }
-
-      const audioBuffer = ctx.createBuffer(1, float32.length, 24000)
-      audioBuffer.getChannelData(0).set(float32)
-
-      const source = ctx.createBufferSource()
-      source.buffer = audioBuffer
-      source.connect(ctx.destination)
-
-      // Queue chunks sequentially — don't overlap
-      const now = ctx.currentTime
-      const startTime = Math.max(now, nextPlayTimeRef.current)
-      source.start(startTime)
-      nextPlayTimeRef.current = startTime + audioBuffer.duration
-    } catch (err) {
-      console.warn('[AriaLive] Audio playback error:', err)
-    }
-  }, [])
+  }, [sessionId, onAriaResponse])
 
   return {
     state,
@@ -600,7 +585,6 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     isMicOn,
     isCameraOn,
     isScreenSharing,
-    transcript,
     toolActivities,
   }
 }

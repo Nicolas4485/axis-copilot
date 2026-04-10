@@ -2,11 +2,9 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { health, type HealthStatus } from '@/lib/api'
+import { health, sessions, clients, type HealthStatus, type SessionListItem, type Client } from '@/lib/api'
 import { HealthIndicator } from '@/components/health-indicator'
-import { Plus, MessageSquare, Users, Clock, ArrowRight, Mic } from 'lucide-react'
-
-// removed START_OPTIONS — single CTA now
+import { MessageSquare, Users, Mic, Clock } from 'lucide-react'
 
 export default function Dashboard() {
   const { data: healthData } = useQuery<HealthStatus>({
@@ -14,6 +12,20 @@ export default function Dashboard() {
     queryFn: () => health.check(),
     refetchInterval: 60_000,
   })
+
+  const { data: sessionsData } = useQuery({
+    queryKey: ['sessions-list'],
+    queryFn: () => sessions.list(),
+    refetchInterval: 30_000,
+  })
+
+  const { data: clientsData } = useQuery({
+    queryKey: ['clients-list'],
+    queryFn: () => clients.list(),
+  })
+
+  const recentSessions = sessionsData?.sessions ?? []
+  const clientList = clientsData?.clients ?? []
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-8">
@@ -49,14 +61,37 @@ export default function Dashboard() {
         <section>
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-serif text-lg">Recent Sessions</h2>
-            <Link href="/" className="text-xs text-[var(--gold)] hover:underline">View all</Link>
           </div>
           <div className="space-y-2">
-            <EmptyState
-              icon={<MessageSquare size={24} className="text-[var(--text-muted)]" />}
-              message="No sessions yet"
-              action="Start a new session above"
-            />
+            {recentSessions.length === 0 ? (
+              <EmptyState
+                icon={<MessageSquare size={24} className="text-[var(--text-muted)]" />}
+                message="No sessions yet"
+                action="Start a new session above"
+              />
+            ) : (
+              recentSessions.slice(0, 8).map((s) => (
+                <Link
+                  key={s.id}
+                  href={`/session/${s.id}`}
+                  className="card flex items-center justify-between hover:border-[var(--gold)]/30 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <MessageSquare size={14} className="text-[var(--gold)]" />
+                    <div>
+                      <p className="text-sm font-medium">{s.title}</p>
+                      <p className="text-xs text-[var(--text-muted)]">
+                        {s.messageCount} messages{s.client ? ` · ${s.client.name}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] flex items-center gap-1">
+                    <Clock size={12} />
+                    {new Date(s.updatedAt).toLocaleDateString()}
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
         </section>
 
@@ -64,14 +99,29 @@ export default function Dashboard() {
         <section>
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-serif text-lg">Clients</h2>
-            <Link href="/" className="text-xs text-[var(--gold)] hover:underline">View all</Link>
           </div>
           <div className="space-y-2">
-            <EmptyState
-              icon={<Users size={24} className="text-[var(--text-muted)]" />}
-              message="No clients yet"
-              action="Clients are created during intake sessions"
-            />
+            {clientList.length === 0 ? (
+              <EmptyState
+                icon={<Users size={24} className="text-[var(--text-muted)]" />}
+                message="No clients yet"
+                action="Clients are created during intake sessions"
+              />
+            ) : (
+              clientList.slice(0, 5).map((c) => (
+                <Link
+                  key={c.id}
+                  href={`/clients/${c.id}`}
+                  className="card flex items-center gap-3 hover:border-[var(--gold)]/30 transition-colors"
+                >
+                  <Users size={14} className="text-[var(--gold)]" />
+                  <div>
+                    <p className="text-sm font-medium">{c.name}</p>
+                    <p className="text-xs text-[var(--text-muted)]">{c.industry}</p>
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
         </section>
       </div>

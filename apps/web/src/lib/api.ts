@@ -62,7 +62,21 @@ export interface Message {
   createdAt: string
 }
 
+export interface SessionListItem {
+  id: string
+  title: string
+  mode: string
+  status: string
+  client: { id: string; name: string } | null
+  messageCount: number
+  createdAt: string
+  updatedAt: string
+}
+
 export const sessions = {
+  list: () =>
+    request<{ sessions: SessionListItem[] }>('/api/sessions'),
+
   create: (data: { clientId?: string; title?: string; mode?: string }) =>
     request<Session>('/api/sessions', { method: 'POST', body: data }),
 
@@ -284,7 +298,7 @@ export const apiKeys = {
 // ─── SSE Stream ───────────────────────────────────────────────
 
 export interface SSEEvent {
-  type: 'tool_start' | 'tool_result' | 'token' | 'conflict_warning' | 'sources' | 'done'
+  type: 'tool_start' | 'tool_result' | 'token' | 'conflict_warning' | 'sources' | 'delegation' | 'done'
   [key: string]: unknown
 }
 

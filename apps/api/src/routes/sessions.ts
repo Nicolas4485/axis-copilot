@@ -12,6 +12,40 @@ const aria = new Aria({ engine, prisma })
 export const sessionsRouter = Router()
 
 /**
+ * GET /api/sessions — List all sessions for the user
+ */
+sessionsRouter.get('/', async (req: Request, res: Response) => {
+  try {
+    const sessionsList = await prisma.session.findMany({
+      where: { userId: req.userId! },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      include: {
+        client: { select: { id: true, name: true } },
+        _count: { select: { messages: true } },
+      },
+    })
+
+    res.json({
+      sessions: sessionsList.map((s) => ({
+        id: s.id,
+        title: s.title,
+        mode: s.mode,
+        status: s.status,
+        client: s.client,
+        messageCount: s._count.messages,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })),
+      requestId: req.requestId,
+    })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to list sessions', code: 'LIST_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
  * POST /api/sessions — Create a new session
  */
 sessionsRouter.post('/', async (req: Request, res: Response) => {
