@@ -230,9 +230,13 @@ export class InfiniteMemory {
   }
 
   /**
-   * Summarise the current session via Claude Haiku.
+   * Summarise the current session via Claude Haiku and persist the result.
+   *
+   * Summary is stored as an AgentMemory (SEMANTIC type, tagged
+   * ['session_summary', sessionId]) so getSessionSummary() can read it
+   * in future sessions instead of fetching raw message snippets.
    */
-  async summariseSession(sessionId: string, _userId: string): Promise<SessionSummary> {
+  async summariseSession(sessionId: string, userId: string): Promise<SessionSummary> {
     const messages = await this.getWorkingMemory(sessionId)
 
     const conversationText = messages
@@ -252,6 +256,32 @@ export class InfiniteMemory {
     }
 
     const keyTopics = this.extractKeyTopics(summaryText)
+
+    // Persist summary to AgentMemory for cross-session retrieval (F25)
+    if (this.prisma && summaryText) {
+      try {
+        await this.prisma.agentMemory.upsert({
+          where: {
+            // Use a stable composite key via a unique constraint workaround:
+            // upsert by checking for an existing record with these tags
+            id: `summary-${sessionId}`,
+          },
+          update: {
+            content: summaryText,
+            tags: ['session_summary', sessionId],
+          },
+          create: {
+            id: `summary-${sessionId}`,
+            userId,
+            memoryType: 'SEMANTIC',
+            content: summaryText,
+            tags: ['session_summary', sessionId],
+          },
+        })
+      } catch {
+        // Upsert may fail if id is already used differently — silently continue
+      }
+    }
 
     return {
       sessionId,
@@ -337,7 +367,12 @@ export class InfiniteMemory {
     }
   }
 
-  /** Tier 2: Build summary from OTHER sessions with the same client */
+  /**
+   * Tier 2: Build cross-session context.
+   *
+   * Reads LLM-generated summaries persisted by summariseSession() first.
+   * Falls back to raw message snippets for sessions that haven't been summarised yet.
+   */
   private async getSessionSummary(
     currentSessionId: string,
     userId: string,
@@ -346,13 +381,56 @@ export class InfiniteMemory {
     if (!this.prisma) return null
 
     try {
-      // Get recent messages from OTHER sessions (not current)
-      const otherSessions = await this.prisma.session.findMany({
+      // Step 1: Look for persisted LLM summaries from other sessions (stored by summariseSession)
+      const otherSessionIds = (
+        await this.prisma.session.findMany({
+          where: { userId, id: { not: currentSessionId }, ...(clientId ? { clientId } : {}) },
+          orderBy: { updatedAt: 'desc' },
+          take: 5,
+          select: { id: true, title: true },
+        })
+      )
+
+      const sessionIds = otherSessionIds.map((s) => s.id)
+      const titleMap = Object.fromEntries(otherSessionIds.map((s) => [s.id, s.title]))
+
+      if (sessionIds.length === 0) return null
+
+      // Look for persisted summaries tagged with these session IDs
+      const persistedSummaries = await this.prisma.agentMemory.findMany({
         where: {
           userId,
-          id: { not: currentSessionId },
-          ...(clientId ? { clientId } : {}),
+          memoryType: 'SEMANTIC',
+          // Match records whose tags contain 'session_summary' and one of the session IDs
+          id: { in: sessionIds.map((id) => `summary-${id}`) },
         },
+        orderBy: { createdAt: 'desc' },
+        take: 3,
+      })
+
+      if (persistedSummaries.length > 0) {
+        const parts = persistedSummaries.map((m) => {
+          const tags = m.tags as string[]
+          const sid = tags.find((t) => t !== 'session_summary') ?? ''
+          const title = titleMap[sid] ?? 'Past session'
+          return `Summary of "${title}":\n${m.content}`
+        })
+
+        const combined = parts.join('\n\n')
+        return {
+          sessionId: currentSessionId,
+          summary: combined,
+          keyTopics: [],
+          clientId,
+          messageCount: persistedSummaries.length,
+          lastUpdated: new Date().toISOString(),
+          tokens: estimateTokens(combined),
+        }
+      }
+
+      // Fallback: raw message snippets for sessions without LLM summaries
+      const otherSessions = await this.prisma.session.findMany({
+        where: { userId, id: { not: currentSessionId }, ...(clientId ? { clientId } : {}) },
         orderBy: { updatedAt: 'desc' },
         take: 3,
         include: {
@@ -363,8 +441,6 @@ export class InfiniteMemory {
           },
         },
       })
-
-      if (otherSessions.length === 0) return null
 
       const summaryParts: string[] = []
       let totalMessages = 0
