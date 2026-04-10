@@ -25,7 +25,7 @@ export interface RouteTarget {
  *
  * Haiku (fast, cheap):
  *   classify, entity_extract, doc_type_detect, client_attribute,
- *   entity_verify
+ *   entity_verify, contextual_retrieval, query_expansion, relevance_score
  *
  * Sonnet (balanced):
  *   context_compress, session_summary, user_email
@@ -106,6 +106,24 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     jsonMode: true,
   },
   entity_verify: {
+    primary: 'claude',
+    claudeModel: 'haiku',
+    maxTokens: 10,
+    jsonMode: false,
+  },
+  contextual_retrieval: {
+    primary: 'claude',
+    claudeModel: 'haiku',
+    maxTokens: 100,
+    jsonMode: false,
+  },
+  query_expansion: {
+    primary: 'claude',
+    claudeModel: 'haiku',
+    maxTokens: 150,
+    jsonMode: false,
+  },
+  relevance_score: {
     primary: 'claude',
     claudeModel: 'haiku',
     maxTokens: 10,

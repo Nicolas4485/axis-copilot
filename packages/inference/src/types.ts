@@ -32,17 +32,20 @@ export interface InferenceMessage {
 
 /** Task type determines model routing */
 export type InferenceTask =
-  | 'agent_response'     // Qwen3 — agent reasoning and tool use
-  | 'classify'           // Qwen3 — message classification
-  | 'entity_extract'     // Qwen3 — entity extraction from text
-  | 'doc_type_detect'    // Qwen3 — document type classification
-  | 'client_attribute'   // Qwen3 — client attribution
-  | 'context_compress'   // Qwen3 — context compression
+  | 'agent_response'     // Claude Sonnet — agent reasoning and tool use
+  | 'classify'           // Claude Haiku — message classification
+  | 'entity_extract'     // Claude Haiku — entity extraction from text
+  | 'doc_type_detect'    // Claude Haiku — document type classification
+  | 'client_attribute'   // Claude Haiku — client attribution
+  | 'context_compress'   // Claude Sonnet — context compression
   | 'entity_verify'      // Claude Haiku — entity verification
-  | 'session_summary'    // Claude Haiku — session summarisation
+  | 'session_summary'    // Claude Sonnet — session summarisation
   | 'user_response'      // Claude Sonnet — user-facing output
   | 'user_email'         // Claude Sonnet — email drafting
   | 'user_report'        // Claude Sonnet — report generation
+  | 'contextual_retrieval' // Claude Haiku — chunk context retrieval
+  | 'query_expansion'    // Claude Haiku — query synonym generation
+  | 'relevance_score'    // Claude Haiku — passage relevance scoring
 
 /** System prompt tier determines max token budget */
 export type PromptTier = 'MICRO' | 'TASK' | 'AGENT'

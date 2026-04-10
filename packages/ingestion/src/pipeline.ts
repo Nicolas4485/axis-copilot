@@ -1,5 +1,5 @@
 // Ingestion Pipeline — 15-step document processing flow
-// fetch → checksum → attribute → parse → classify → chunk → embed →
+// fetch → checksum → attribute → parse → classify → chunk → contextual_retrieval → embed →
 // store chunks → extract entities → verify entities → conflict detect →
 // update records → episodic memory → publish event → finalise
 
@@ -170,14 +170,20 @@ export class IngestionPipeline {
         entityCount,
       })
 
+      // Step 6.5: Contextual Retrieval — prepend context to each chunk using Claude
+      const contextualizedChunks = await this.addContextualRetrieval(chunks, parsed)
+      this.emitProgress(documentId, 'contextual_retrieval', 6.5,
+        `Added contextual context to ${contextualizedChunks.length} chunks`
+      )
+
       // Step 7: Embed — generate embeddings via Voyage AI
-      const embeddings = await this.embedChunks(chunks)
+      const embeddings = await this.embedChunks(contextualizedChunks)
       this.emitProgress(documentId, 'embed', 7,
         `Generated ${embeddings.length} embeddings (${embeddings[0]?.length ?? 0} dimensions)`
       )
 
       // Step 8: Store chunks — save to PostgreSQL via Prisma with embeddings
-      await this.storeChunks(documentId, chunks, embeddings)
+      await this.storeChunks(documentId, contextualizedChunks, embeddings)
       this.emitProgress(documentId, 'store_chunks', 8,
         `Stored ${chunkCount} chunks in database`
       )
@@ -374,6 +380,52 @@ Preview: ${parsed.text.slice(0, 300)}`,
     }
 
     return chunks
+  }
+
+  /** Step 6.5: Add contextual context to chunks using Claude */
+  private async addContextualRetrieval(chunks: DocumentChunk[], parsed: ParsedDocument): Promise<DocumentChunk[]> {
+    const docSummary = parsed.metadata.title
+    const fullDoc = parsed.text.slice(0, 2000) // Use first 2000 chars as document context
+
+    const contextualizedChunks: DocumentChunk[] = []
+
+    for (const chunk of chunks) {
+      try {
+        const response = await this.engine.route('contextual_retrieval', {
+          systemPromptKey: 'ENTITY_EXTRACT_RAW', // Reuse a simple prompt
+          messages: [{
+            role: 'user',
+            content: `Given this document titled "${docSummary}", what is the context of this chunk? Respond in 1-2 sentences.
+
+Document excerpt: ${fullDoc}
+
+Chunk: ${chunk.content.slice(0, 500)}`,
+          }],
+          maxTokens: 100,
+        })
+
+        const contextText = response.content
+          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+          .map((b) => b.text)
+          .join('')
+          .trim()
+
+        // Prepend context to chunk
+        const prependedContent = contextText ? `${contextText}\n\n${chunk.content}` : chunk.content
+
+        contextualizedChunks.push({
+          ...chunk,
+          content: prependedContent,
+          tokens: estimateTokens(prependedContent),
+        })
+      } catch (err) {
+        console.warn(`[Pipeline] Contextual retrieval failed for chunk ${chunk.chunkIndex}: ${err instanceof Error ? err.message : 'Unknown'}`)
+        // Fall back to original chunk if retrieval fails
+        contextualizedChunks.push(chunk)
+      }
+    }
+
+    return contextualizedChunks
   }
 
   /** Step 7: Generate embeddings via Voyage AI in batches of 50 */
