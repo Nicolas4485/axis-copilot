@@ -29,6 +29,11 @@ const envSchema = z.object({
   // Voyage AI — optional
   VOYAGE_API_KEY: z.string().optional().default(''),
 
+  // Prisma connection pool — optional overrides (can also embed in DATABASE_URL)
+  // Recommended production values: PRISMA_POOL_SIZE=20, PRISMA_POOL_TIMEOUT=30
+  PRISMA_POOL_SIZE: z.string().optional().default(''),
+  PRISMA_POOL_TIMEOUT: z.string().optional().default(''),
+
   // Gemini — optional (Aria uses Gemini 2.0 Flash Live for voice/video)
   GEMINI_API_KEY: z.string().optional().default(''),
 
