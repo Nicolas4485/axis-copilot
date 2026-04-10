@@ -1,9 +1,12 @@
 import type { Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
-import neo4j from 'neo4j-driver'
+import { Neo4jClient } from '@axis/knowledge-graph'
 
 const VERSION = '0.0.1'
+
+// Module-level singleton — avoids creating a new driver + connection pool on every health check.
+const neo4jClient = new Neo4jClient()
 
 async function checkDb(): Promise<'ok' | 'error'> {
   try {
@@ -27,21 +30,11 @@ async function checkRedis(): Promise<'ok' | 'error'> {
 }
 
 async function checkNeo4j(): Promise<'ok' | 'error'> {
-  const uri = process.env['NEO4J_URI']
-  const user = process.env['NEO4J_USER']
-  const password = process.env['NEO4J_PASSWORD']
-  if (!uri || !user || !password) return 'error'
-
-  const driver = neo4j.driver(uri, neo4j.auth.basic(user, password), {
-    connectionTimeout: 3000,
-  })
   try {
-    await driver.verifyConnectivity()
-    return 'ok'
+    const status = await neo4jClient.healthCheck()
+    return status.connected ? 'ok' : 'error'
   } catch {
     return 'error'
-  } finally {
-    await driver.close()
   }
 }
 
