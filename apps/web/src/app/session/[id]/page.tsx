@@ -163,13 +163,16 @@ export default function SessionPage() {
     }
   }
 
+  // Only show the streaming bubble while actively streaming.
+  // After `done`, `streaming` becomes false so this bubble disappears before
+  // the refetch brings back the persisted assistant message — prevents duplication.
   const allMessages: Array<Message | { id: string; role: 'ASSISTANT'; content: string; streaming: true }> = [
     ...(session?.messages ?? []),
-    ...(streamContent ? [{
+    ...(streamContent && streaming ? [{
       id: 'streaming',
       role: 'ASSISTANT' as const,
       content: streamContent,
-      streaming: streaming as true,
+      streaming: true as const,
     }] : []),
   ]
 
