@@ -288,7 +288,7 @@ export class Aria {
     return {
       systemInstruction,
       tools: ARIA_TOOL_DECLARATIONS,
-      model: 'gemini-3.1-flash-live-preview',
+      model: 'gemini-2.0-flash-live',
     }
   }
 
