@@ -71,6 +71,10 @@ async function checkLocalInference(): Promise<'active' | 'unavailable'> {
   }
 }
 
+/**
+ * Public health handler — returns only overall status.
+ * SEC-8: Never expose service names/versions/connectivity to unauthenticated callers.
+ */
 export async function healthHandler(_req: Request, res: Response): Promise<void> {
   const [db, redisStatus, neo4jStatus, anthropic, localInference] = await Promise.all([
     checkDb(),
@@ -80,8 +84,27 @@ export async function healthHandler(_req: Request, res: Response): Promise<void>
     checkLocalInference(),
   ])
 
+  const allOk = db === 'ok' && redisStatus === 'ok'
+  const overallStatus = allOk ? 'ok' : 'degraded'
+
+  res.json({ status: overallStatus })
+}
+
+/**
+ * Authenticated health handler — returns full service breakdown.
+ * Only reachable via GET /api/health/detailed which sits behind the authenticate middleware.
+ */
+export async function healthDetailedHandler(_req: Request, res: Response): Promise<void> {
+  const [db, redisStatus, neo4jStatus, anthropic, localInference] = await Promise.all([
+    checkDb(),
+    checkRedis(),
+    checkNeo4j(),
+    checkAnthropic(),
+    checkLocalInference(),
+  ])
+
   res.json({
-    status: 'ok',
+    status: db === 'ok' && redisStatus === 'ok' ? 'ok' : 'degraded',
     db,
     redis: redisStatus,
     neo4j: neo4jStatus,
