@@ -46,7 +46,9 @@ const MAX_RECONNECT_DELAY_MS = 60000
 export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const { sessionId, onTranscript, onAriaResponse, onToolActivity, onError } = options
 
-  const [state, setState] = useState<AriaState>('idle')
+  const [state, _setState] = useState<AriaState>('idle')
+  const stateRef = useRef<AriaState>('idle')
+  const setState = useCallback((s: AriaState) => { stateRef.current = s; _setState(s) }, [])
   const [isConnected, setIsConnected] = useState(false)
   const [isMicOn, setIsMicOn] = useState(false)
   const [isCameraOn, setIsCameraOn] = useState(false)
@@ -303,8 +305,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               currentUserTextRef.current = ''
               currentAriaTextRef.current = ''
 
-              // Clear tool activities for next turn
-              setToolActivities([])
+              // Clear completed/error activities, keep running ones (delegations in progress)
+              setToolActivities((prev) => prev.filter((t) => t.status === 'running'))
             }
           }
 
@@ -409,14 +411,16 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
         const inputData = e.inputBuffer.getChannelData(0)
 
-        // Voice activity detection — interrupt Aria's playback
-        let maxAmplitude = 0
-        for (let i = 0; i < inputData.length; i++) {
-          const abs = Math.abs(inputData[i] ?? 0)
-          if (abs > maxAmplitude) maxAmplitude = abs
-        }
-        if (maxAmplitude > 0.02) {
-          stopAudioPlayback()
+        // Voice activity detection — only interrupt during speaking (not during delegation/thinking)
+        if (stateRef.current === 'speaking') {
+          let maxAmplitude = 0
+          for (let i = 0; i < inputData.length; i++) {
+            const abs = Math.abs(inputData[i] ?? 0)
+            if (abs > maxAmplitude) maxAmplitude = abs
+          }
+          if (maxAmplitude > 0.05) {  // Higher threshold to avoid background noise
+            stopAudioPlayback()
+          }
         }
 
         // Convert float32 → int16 PCM
