@@ -1,11 +1,15 @@
 'use client'
 
-// useAriaLive — React hook for Gemini Live WebSocket (voice/video/screen)
-// Fixes applied: audio rate 24kHz, binary handling, setup timeout,
-// exponential backoff, transcript consolidation, state management
+// useAriaLive — Gemini = voice (ears + mouth), Claude = brain (reasoning + tools)
+//
+// Flow: User speaks → Gemini transcribes → Claude Opus processes →
+//       Response text → Gemini speaks it back
+//
+// Gemini handles ONLY audio I/O. No function calling, no tools.
+// All reasoning, RAG, delegation goes through Claude via /api/aria/messages
 
 import { useRef, useState, useCallback, useEffect } from 'react'
-import { aria } from './api'
+import { aria, streamAriaMessage, type SSEEvent } from './api'
 
 export type AriaState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'delegating' | 'error'
 
@@ -18,7 +22,6 @@ interface UseAriaLiveOptions {
   sessionId: string
   onTranscript?: (text: string, isFinal: boolean) => void
   onAriaResponse?: (text: string) => void
-  onToolActivity?: (activities: ToolActivity[]) => void
   onError?: (error: string) => void
 }
 
@@ -38,24 +41,26 @@ interface UseAriaLiveReturn {
   toolActivities: ToolActivity[]
 }
 
-const GEMINI_LIVE_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
-const AUDIO_SAMPLE_RATE = 24000  // Gemini Live uses 24kHz
-const SETUP_TIMEOUT_MS = 10000
-const MAX_RECONNECT_DELAY_MS = 60000
+const GEMINI_WS_BASE = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+const AUDIO_RATE = 24000
+const SETUP_TIMEOUT = 10000
+const MAX_RECONNECT_DELAY = 60000
 
 export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
-  const { sessionId, onTranscript, onAriaResponse, onToolActivity, onError } = options
+  const { sessionId, onTranscript, onAriaResponse, onError } = options
 
+  // State with ref mirror for closures
   const [state, _setState] = useState<AriaState>('idle')
   const stateRef = useRef<AriaState>('idle')
   const setState = useCallback((s: AriaState) => { stateRef.current = s; _setState(s) }, [])
+
   const [isConnected, setIsConnected] = useState(false)
   const [isMicOn, setIsMicOn] = useState(false)
   const [isCameraOn, setIsCameraOn] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [toolActivities, setToolActivities] = useState<ToolActivity[]>([])
 
-  // Refs for WebSocket, audio, and streams
+  // Refs
   const wsRef = useRef<WebSocket | null>(null)
   const playbackCtxRef = useRef<AudioContext | null>(null)
   const micCtxRef = useRef<AudioContext | null>(null)
@@ -66,30 +71,10 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const nextPlayTimeRef = useRef(0)
   const reconnectDelayRef = useRef(2000)
   const setupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const userTranscriptRef = useRef('')
+  const processingRef = useRef(false)  // Prevents overlapping Claude calls
 
-  // Turn tracking for transcript persistence
-  const currentAriaTextRef = useRef('')
-  const currentUserTextRef = useRef('')
-
-  // ─── Transcript persistence ─────────────────────────────────────
-
-  const saveTranscript = useCallback((userText: string, ariaText: string) => {
-    if (!userText.trim() && !ariaText.trim()) return
-    const apiUrl = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
-    const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
-    fetch(`${apiUrl}/api/aria/save-transcript`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ sessionId, userText, ariaText }),
-    }).catch((err) => {
-      console.warn('[AriaLive] Transcript save failed:', err)
-    })
-  }, [sessionId])
-
-  // ─── Audio playback (queued, 24kHz) ────────────────────────────
+  // ─── Audio playback ────────────────────────────────────────────
 
   const stopAudioPlayback = useCallback(() => {
     if (playbackCtxRef.current) {
@@ -100,10 +85,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   }, [])
 
   const playAudio = useCallback(async (base64Data: string) => {
+    if (!base64Data || base64Data.length < 10) return
     try {
-      if (!base64Data || base64Data.length < 10) return
-
-      const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+      const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: AUDIO_RATE })
       if (!playbackCtxRef.current) playbackCtxRef.current = ctx
 
       const binaryString = atob(base64Data)
@@ -112,7 +96,6 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         bytes[i] = binaryString.charCodeAt(i)
       }
 
-      // Gemini sends PCM int16 at 24kHz
       const int16 = new Int16Array(bytes.buffer)
       if (int16.length === 0) return
 
@@ -121,7 +104,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         float32[i] = (int16[i] ?? 0) / 32768
       }
 
-      const audioBuffer = ctx.createBuffer(1, float32.length, AUDIO_SAMPLE_RATE)
+      const audioBuffer = ctx.createBuffer(1, float32.length, AUDIO_RATE)
       audioBuffer.getChannelData(0).set(float32)
 
       const source = ctx.createBufferSource()
@@ -133,93 +116,137 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       source.start(startTime)
       nextPlayTimeRef.current = startTime + audioBuffer.duration
     } catch (err) {
-      console.warn('[AriaLive] Audio playback error:', err)
+      console.warn('[AriaLive] Playback error:', err)
     }
   }, [])
+
+  // ─── Send user text to Claude via API, get response, speak it ──
+
+  const processWithClaude = useCallback(async (userText: string) => {
+    if (processingRef.current || !userText.trim()) return
+    processingRef.current = true
+    setState('thinking')
+
+    try {
+      // Send to Claude via the existing Aria text endpoint
+      // This does: RAG search, memory context, tool calls, delegation — everything
+      const responseText = await new Promise<string>((resolve, reject) => {
+        let fullText = ''
+        const controller = streamAriaMessage(
+          sessionId,
+          userText,
+          {},
+          (event: SSEEvent) => {
+            switch (event.type) {
+              case 'tool_start':
+                setToolActivities((prev) => [...prev, { tool: event['tool'] as string, status: 'running' }])
+                break
+              case 'tool_result':
+                setToolActivities((prev) =>
+                  prev.map((t) => t.tool === event['tool'] ? { ...t, status: 'completed' } : t)
+                )
+                break
+              case 'delegation':
+                setToolActivities((prev) => [...prev, {
+                  tool: `delegate_${event['workerType'] as string}_analysis`,
+                  status: 'running',
+                }])
+                setState('delegating')
+                break
+              case 'token':
+                fullText += (event['content'] as string) ?? ''
+                break
+              case 'done':
+                if (event['error']) {
+                  reject(new Error(event['error'] as string))
+                } else {
+                  resolve(fullText)
+                }
+                break
+            }
+          }
+        )
+        // Store controller for potential cancellation
+        void controller
+      })
+
+      if (!responseText.trim()) {
+        setState('listening')
+        processingRef.current = false
+        return
+      }
+
+      // Show response in transcript
+      onAriaResponse?.(responseText)
+
+      // Send response text to Gemini to speak it
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Use Gemini's TTS by sending the text as a "user" message
+        // Gemini will generate audio for it
+        wsRef.current.send(JSON.stringify({
+          clientContent: {
+            turns: [
+              { role: 'user', parts: [{ text: `Please read this response aloud exactly as written, do not add anything:\n\n${responseText}` }] },
+            ],
+            turnComplete: true,
+          },
+        }))
+        setState('speaking')
+      } else {
+        // Gemini not connected — just show text
+        setState('listening')
+      }
+    } catch (err) {
+      console.error('[AriaLive] Claude processing error:', err)
+      onError?.(err instanceof Error ? err.message : 'Processing failed')
+      setState('listening')
+    } finally {
+      processingRef.current = false
+    }
+  }, [sessionId, onAriaResponse, onError, setState])
 
   // ─── Cleanup ───────────────────────────────────────────────────
 
   const cleanup = useCallback(() => {
-    if (setupTimeoutRef.current) {
-      clearTimeout(setupTimeoutRef.current)
-      setupTimeoutRef.current = null
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((t) => t.stop())
-      micStreamRef.current = null
-    }
-    if (cameraStreamRef.current) {
-      cameraStreamRef.current.getTracks().forEach((t) => t.stop())
-      cameraStreamRef.current = null
-    }
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop())
-      screenStreamRef.current = null
-    }
-    if (processorRef.current) {
-      processorRef.current.onaudioprocess = null
-      processorRef.current.disconnect()
-      processorRef.current = null
-    }
-    if (micCtxRef.current) {
-      void micCtxRef.current.close()
-      micCtxRef.current = null
-    }
-    if (playbackCtxRef.current) {
-      void playbackCtxRef.current.close()
-      playbackCtxRef.current = null
-    }
+    if (setupTimeoutRef.current) { clearTimeout(setupTimeoutRef.current); setupTimeoutRef.current = null }
+    if (micStreamRef.current) { micStreamRef.current.getTracks().forEach((t) => t.stop()); micStreamRef.current = null }
+    if (cameraStreamRef.current) { cameraStreamRef.current.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null }
+    if (screenStreamRef.current) { screenStreamRef.current.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null }
+    if (processorRef.current) { processorRef.current.onaudioprocess = null; processorRef.current.disconnect(); processorRef.current = null }
+    if (micCtxRef.current) { void micCtxRef.current.close(); micCtxRef.current = null }
+    if (playbackCtxRef.current) { void playbackCtxRef.current.close(); playbackCtxRef.current = null }
     nextPlayTimeRef.current = 0
-    setIsMicOn(false)
-    setIsCameraOn(false)
-    setIsScreenSharing(false)
+    setIsMicOn(false); setIsCameraOn(false); setIsScreenSharing(false)
   }, [])
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close(1000)
-        wsRef.current = null
-      }
-      cleanup()
-    }
+    return () => { if (wsRef.current) { wsRef.current.close(1000); wsRef.current = null }; cleanup() }
   }, [cleanup])
 
-  // ─── Connect ───────────────────────────────────────────────────
+  // ─── Connect to Gemini (voice only — no tools) ────────────────
 
   const connect = useCallback(async () => {
     try {
       setState('connecting')
-
       const config = await aria.getSessionToken(sessionId)
 
-      const wsUrl = `${GEMINI_LIVE_WS_BASE}?key=${config.apiKey}`
-      const ws = new WebSocket(wsUrl)
+      const ws = new WebSocket(`${GEMINI_WS_BASE}?key=${config.apiKey}`)
       wsRef.current = ws
 
-      // Setup timeout — if Gemini doesn't respond in 10s, fail
       setupTimeoutRef.current = setTimeout(() => {
-        if (!isConnected) {
-          ws.close()
-          setState('error')
-          onError?.('Connection timeout — Gemini did not respond')
-        }
-      }, SETUP_TIMEOUT_MS)
+        if (!isConnected) { ws.close(); setState('error'); onError?.('Connection timeout') }
+      }, SETUP_TIMEOUT)
 
       ws.onopen = () => {
+        // Gemini setup — voice only, NO tools, NO function calling
         ws.send(JSON.stringify({
           setup: {
             model: `models/${config.model}`,
             generationConfig: { responseModalities: ['AUDIO'] },
-            systemInstruction: { parts: [{ text: config.systemInstruction }] },
-            tools: [{
-              functionDeclarations: config.tools.map((t) => ({
-                name: t.name,
-                description: t.description,
-                parameters: t.input_schema,
-              })),
-            }],
+            systemInstruction: {
+              parts: [{ text: 'You are Aria, a voice assistant. When the user speaks, transcribe their speech. When given text to read aloud, speak it naturally in a warm, professional tone. Do not add commentary or change the content.' }],
+            },
+            // NO tools — all reasoning goes through Claude
           },
         }))
       }
@@ -227,180 +254,103 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       ws.onmessage = async (event) => {
         try {
           let data: Record<string, unknown>
-
           if (event.data instanceof Blob) {
             const text = await event.data.text()
-            try {
-              data = JSON.parse(text) as Record<string, unknown>
-            } catch {
-              // Binary audio data — play it directly
-              // Don't treat as setupComplete
-              return
-            }
+            try { data = JSON.parse(text) as Record<string, unknown> }
+            catch { return }  // Binary audio — handled by Gemini internally
           } else {
             data = JSON.parse(event.data as string) as Record<string, unknown>
           }
 
-          // Setup complete
           if (data['setupComplete'] !== undefined) {
-            if (setupTimeoutRef.current) {
-              clearTimeout(setupTimeoutRef.current)
-              setupTimeoutRef.current = null
-            }
+            if (setupTimeoutRef.current) { clearTimeout(setupTimeoutRef.current); setupTimeoutRef.current = null }
             setIsConnected(true)
             setState('listening')
-            reconnectDelayRef.current = 2000  // Reset backoff on successful connection
+            reconnectDelayRef.current = 2000
             return
           }
 
-          // Session resumption updates — ignore silently
           if (data['sessionResumptionUpdate'] !== undefined) return
 
-          // Server content (text/audio responses)
           const serverContent = data['serverContent'] as Record<string, unknown> | undefined
           if (serverContent) {
-            if (serverContent['interrupted']) {
-              stopAudioPlayback()
-              setState('listening')
-              return
-            }
+            if (serverContent['interrupted']) { stopAudioPlayback(); setState('listening'); return }
 
-            // Capture user's speech transcript
+            // User's transcribed speech — send to Claude for processing
             const inputTranscript = serverContent['inputTranscript'] as string | undefined
-            if (inputTranscript) {
-              currentUserTextRef.current = inputTranscript
+            if (inputTranscript && inputTranscript.trim()) {
+              userTranscriptRef.current = inputTranscript
               onTranscript?.(inputTranscript, true)
             }
 
-            // Process model response parts
+            // Audio response from Gemini (speaking Claude's response)
             const parts = (serverContent['modelTurn'] as Record<string, unknown>)?.['parts'] as Array<Record<string, unknown>> | undefined
-            let hasContent = false
             if (parts) {
               for (const part of parts) {
-                if (part['text']) {
-                  currentAriaTextRef.current += part['text'] as string
-                  onAriaResponse?.(part['text'] as string)
-                  hasContent = true
-                }
                 if (part['inlineData']) {
                   const audioData = part['inlineData'] as Record<string, unknown>
                   await playAudio(audioData['data'] as string)
-                  hasContent = true
+                  setState('speaking')
                 }
               }
-              if (hasContent) setState('speaking')
             }
 
-            // Turn complete — save transcript and reset
             if (serverContent['turnComplete']) {
-              setState('listening')
-              nextPlayTimeRef.current = 0
-
-              // Save both user and Aria text together
-              const userText = currentUserTextRef.current
-              const ariaText = currentAriaTextRef.current
-              if (userText.trim() || ariaText.trim()) {
-                saveTranscript(userText, ariaText)
+              // If user spoke, process with Claude
+              const transcript = userTranscriptRef.current
+              if (transcript.trim() && !processingRef.current) {
+                userTranscriptRef.current = ''
+                void processWithClaude(transcript)
+              } else {
+                setState('listening')
               }
-              currentUserTextRef.current = ''
-              currentAriaTextRef.current = ''
-
-              // Clear completed/error activities, keep running ones (delegations in progress)
+              nextPlayTimeRef.current = 0
+              // Keep running delegation activities, clear completed ones
               setToolActivities((prev) => prev.filter((t) => t.status === 'running'))
             }
           }
-
-          // Tool calls
-          const toolCall = data['toolCall'] as Record<string, unknown> | undefined
-          if (toolCall) {
-            const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
-            if (functionCalls) {
-              try {
-                await handleFunctionCalls(functionCalls)
-              } catch (err) {
-                console.error('[AriaLive] Function call error:', err)
-              }
-            }
-          }
         } catch (err) {
-          console.error('[AriaLive] Message parse error:', err)
+          console.error('[AriaLive] Message error:', err)
         }
       }
 
-      ws.onerror = () => {
-        setState('error')
-        onError?.('WebSocket connection error')
-      }
+      ws.onerror = () => { setState('error'); onError?.('WebSocket error') }
 
       ws.onclose = (event) => {
         setIsConnected(false)
-
-        if (event.code === 1000) {
-          setState('idle')
-          cleanup()
-          return
-        }
-
-        // Unexpected close — reconnect with exponential backoff
+        if (event.code === 1000) { setState('idle'); cleanup(); return }
         const delay = reconnectDelayRef.current
-        reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS)
-        setState('connecting')
-        cleanup()
-
-        setTimeout(() => {
-          if (wsRef.current === ws || wsRef.current === null) {
-            void connect()
-          }
-        }, delay)
+        reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY)
+        setState('connecting'); cleanup()
+        setTimeout(() => { if (wsRef.current === ws || !wsRef.current) void connect() }, delay)
       }
     } catch (err) {
-      setState('error')
-      onError?.(err instanceof Error ? err.message : 'Connection failed')
+      setState('error'); onError?.(err instanceof Error ? err.message : 'Connection failed')
     }
-  }, [sessionId, isConnected, onAriaResponse, onTranscript, onError, saveTranscript, playAudio, stopAudioPlayback, cleanup])
+  }, [sessionId, isConnected, onTranscript, onError, setState, playAudio, stopAudioPlayback, cleanup, processWithClaude])
 
   const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close(1000)  // Normal close — no reconnect
-      wsRef.current = null
-    }
-    cleanup()
-    setIsConnected(false)
-    setState('idle')
-  }, [cleanup])
+    if (wsRef.current) { wsRef.current.close(1000); wsRef.current = null }
+    cleanup(); setIsConnected(false); setState('idle')
+  }, [cleanup, setState])
 
-  // ─── Mic control (24kHz to match Gemini) ───────────────────────
+  // ─── Mic (24kHz) ───────────────────────────────────────────────
 
   const toggleMic = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
     if (isMicOn) {
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((t) => t.stop())
-        micStreamRef.current = null
-      }
-      if (processorRef.current) {
-        processorRef.current.onaudioprocess = null
-        processorRef.current.disconnect()
-        processorRef.current = null
-      }
-      setIsMicOn(false)
-      return
+      micStreamRef.current?.getTracks().forEach((t) => t.stop()); micStreamRef.current = null
+      if (processorRef.current) { processorRef.current.onaudioprocess = null; processorRef.current.disconnect(); processorRef.current = null }
+      setIsMicOn(false); return
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: AUDIO_SAMPLE_RATE, channelCount: 1 },
-      })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: AUDIO_RATE, channelCount: 1 } })
       micStreamRef.current = stream
+      stream.getAudioTracks()[0]?.addEventListener('ended', () => { setIsMicOn(false); micStreamRef.current = null })
 
-      // Track if mic is externally stopped
-      stream.getAudioTracks()[0]?.addEventListener('ended', () => {
-        setIsMicOn(false)
-        micStreamRef.current = null
-      })
-
-      const ctx = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE })
+      const ctx = new AudioContext({ sampleRate: AUDIO_RATE })
       micCtxRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
       const processor = ctx.createScriptProcessor(4096, 1, 1)
@@ -408,187 +358,69 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
       processor.onaudioprocess = (e) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-
         const inputData = e.inputBuffer.getChannelData(0)
 
-        // Voice activity detection — only interrupt during speaking (not during delegation/thinking)
+        // VAD — only interrupt when Aria is speaking
         if (stateRef.current === 'speaking') {
-          let maxAmplitude = 0
-          for (let i = 0; i < inputData.length; i++) {
-            const abs = Math.abs(inputData[i] ?? 0)
-            if (abs > maxAmplitude) maxAmplitude = abs
-          }
-          if (maxAmplitude > 0.05) {  // Higher threshold to avoid background noise
-            stopAudioPlayback()
-          }
+          let max = 0
+          for (let i = 0; i < inputData.length; i++) { const a = Math.abs(inputData[i] ?? 0); if (a > max) max = a }
+          if (max > 0.05) stopAudioPlayback()
         }
 
-        // Convert float32 → int16 PCM
         const pcm = new Int16Array(inputData.length)
         for (let i = 0; i < inputData.length; i++) {
           pcm[i] = Math.max(-32768, Math.min(32767, Math.floor((inputData[i] ?? 0) * 32768)))
         }
-
-        // Base64 encode and send
         const bytes = new Uint8Array(pcm.buffer)
         let binary = ''
-        for (let j = 0; j < bytes.length; j++) {
-          binary += String.fromCharCode(bytes[j]!)
-        }
+        for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]!)
+
         wsRef.current.send(JSON.stringify({
-          realtimeInput: {
-            audio: { mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`, data: btoa(binary) },
-          },
+          realtimeInput: { audio: { mimeType: `audio/pcm;rate=${AUDIO_RATE}`, data: btoa(binary) } },
         }))
       }
 
-      source.connect(processor)
-      processor.connect(ctx.destination)
-      setIsMicOn(true)
-      setState('listening')
+      source.connect(processor); processor.connect(ctx.destination)
+      setIsMicOn(true); setState('listening')
     } catch (err) {
-      onError?.(`Microphone access denied: ${err instanceof Error ? err.message : 'Unknown'}`)
+      onError?.(`Mic denied: ${err instanceof Error ? err.message : 'Unknown'}`)
     }
-  }, [isMicOn, onError, stopAudioPlayback])
+  }, [isMicOn, onError, setState, stopAudioPlayback])
 
-  // ─── Camera / Screen share ─────────────────────────────────────
+  // ─── Camera / Screen ───────────────────────────────────────────
 
   const toggleCamera = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    if (isCameraOn) {
-      cameraStreamRef.current?.getTracks().forEach((t) => t.stop())
-      cameraStreamRef.current = null
-      setIsCameraOn(false)
-      return
-    }
+    if (isCameraOn) { cameraStreamRef.current?.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null; setIsCameraOn(false); return }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
-      cameraStreamRef.current = stream
-      setIsCameraOn(true)
-    } catch (err) {
-      onError?.(`Camera access denied: ${err instanceof Error ? err.message : 'Unknown'}`)
-    }
+      cameraStreamRef.current = await navigator.mediaDevices.getUserMedia({ video: true }); setIsCameraOn(true)
+    } catch (err) { onError?.(`Camera denied: ${err instanceof Error ? err.message : 'Unknown'}`) }
   }, [isCameraOn, onError])
 
   const startScreenShare = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true })
-      screenStreamRef.current = stream
-      setIsScreenSharing(true)
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-        setIsScreenSharing(false)
-        screenStreamRef.current = null
-      })
-    } catch (err) {
-      onError?.(`Screen share denied: ${err instanceof Error ? err.message : 'Unknown'}`)
-    }
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true }); screenStreamRef.current = stream; setIsScreenSharing(true)
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => { setIsScreenSharing(false); screenStreamRef.current = null })
+    } catch (err) { onError?.(`Screen share denied: ${err instanceof Error ? err.message : 'Unknown'}`) }
   }, [onError])
 
   const stopScreenShare = useCallback(() => {
-    screenStreamRef.current?.getTracks().forEach((t) => t.stop())
-    screenStreamRef.current = null
-    setIsScreenSharing(false)
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null; setIsScreenSharing(false)
   }, [])
 
-  // ─── Text input ────────────────────────────────────────────────
+  // ─── Text input (bypasses Gemini, goes straight to Claude) ─────
 
   const sendText = useCallback((text: string) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    wsRef.current.send(JSON.stringify({ realtimeInput: { text } }))
-    setState('thinking')
-    currentUserTextRef.current = text
-  }, [])
-
-  // ─── Function call relay ──────────────────────────────────────
-
-  const handleFunctionCalls = useCallback(async (calls: Array<Record<string, unknown>>) => {
-    setState('delegating')
-    const responses: Array<Record<string, unknown>> = []
-
-    for (const call of calls) {
-      const name = call['name'] as string
-      const args = call['args'] as Record<string, unknown>
-      const id = call['id'] as string
-
-      setToolActivities((prev) => [...prev, { tool: name, status: 'running' }])
-
-      try {
-        let resultData: unknown
-
-        if (name.startsWith('delegate_')) {
-          const workerNames: Record<string, string> = {
-            delegate_product_analysis: 'Sean',
-            delegate_process_analysis: 'Kevin',
-            delegate_competitive_analysis: 'Mel',
-            delegate_stakeholder_analysis: 'Anjie',
-          }
-          const workerTypeMap: Record<string, string> = {
-            delegate_product_analysis: 'product',
-            delegate_process_analysis: 'process',
-            delegate_competitive_analysis: 'competitive',
-            delegate_stakeholder_analysis: 'stakeholder',
-          }
-          const workerName = workerNames[name] ?? 'Agent'
-          const workerType = workerTypeMap[name] ?? 'product'
-
-          // Fire async — don't block
-          const imageArg = args['imageBase64'] as string | undefined
-          aria.delegate({
-            sessionId,
-            workerType,
-            query: (args['query'] as string) ?? '',
-            ...(imageArg ? { imageBase64: imageArg } : {}),
-          }).then(() => {
-            setToolActivities((prev) =>
-              prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
-            )
-            onAriaResponse?.(`\n\n✅ **${workerName} completed their analysis.**\n`)
-          }).catch(() => {
-            setToolActivities((prev) =>
-              prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
-            )
-            onAriaResponse?.(`\n\n⚠️ ${workerName} encountered an error.\n`)
-          })
-
-          resultData = { status: 'delegated', agent: workerName, message: `${workerName} is working on this.` }
-        } else {
-          const result = await aria.toolCall({ sessionId, toolName: name, toolInput: args })
-          resultData = result.result
-          setToolActivities((prev) =>
-            prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
-          )
-        }
-
-        responses.push({ id, name, response: { output: resultData } })
-      } catch (err) {
-        responses.push({ id, name, response: { output: { error: err instanceof Error ? err.message : 'Failed' } } })
-        setToolActivities((prev) =>
-          prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
-        )
-      }
-    }
-
-    // Send responses back to Gemini
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ toolResponse: { functionResponses: responses } }))
-    }
-    setState('thinking')
-  }, [sessionId, onAriaResponse])
+    onTranscript?.(text, true)
+    void processWithClaude(text)
+  }, [onTranscript, processWithClaude])
 
   return {
-    state,
-    isConnected,
-    connect,
-    disconnect,
+    state, isConnected, connect, disconnect,
     toggleMic: () => void toggleMic(),
     toggleCamera: () => void toggleCamera(),
-    startScreenShare,
-    stopScreenShare,
-    sendText,
-    isMicOn,
-    isCameraOn,
-    isScreenSharing,
-    toolActivities,
+    startScreenShare, stopScreenShare, sendText,
+    isMicOn, isCameraOn, isScreenSharing, toolActivities,
   }
 }
