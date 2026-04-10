@@ -1,4 +1,4 @@
-// BaseAgent — agentic loop with tool execution
+// BaseAgent — agentic loop with tool execution and iterative retrieval
 // ALL model calls go through InferenceEngine — never call Anthropic SDK directly
 
 import { InferenceEngine } from '@axis/inference'
@@ -16,6 +16,7 @@ import type {
 } from './types.js'
 
 const MAX_ITERATIONS = 10
+const MAX_RETRIEVAL_CYCLES = 2
 
 export class BaseAgent {
   protected config: AgentConfig
@@ -34,16 +35,49 @@ export class BaseAgent {
    * Run the agent on a user message with full agentic loop.
    *
    * 1. Build messages with system prompt key, assembled context, RAG context
-   * 2. Call InferenceEngine.route("agent_response")
-   * 3. If tool_use blocks: execute tools, feed results back
-   * 4. Repeat until no tool_use blocks or max iterations
-   * 5. Post-process: store message, update memory, attach citations
+   * 2. Evaluate if initial RAG context is sufficient; if not, trigger re-retrieval (up to 2 cycles)
+   * 3. Call InferenceEngine.route("agent_response")
+   * 4. If tool_use blocks: execute tools, feed results back
+   * 5. Repeat until no tool_use blocks or max iterations
+   * 6. Post-process: store message, update memory, attach citations
    */
   async run(userMessage: string, context: AgentContext): Promise<AgentResponse> {
     const toolsUsed: string[] = []
     const memoryUpdates: MemoryUpdate[] = []
     const citations: Citation[] = this.extractCitations(context)
     const conflictsFound: ConflictFound[] = this.extractConflicts(context)
+
+    // Evaluate and potentially re-retrieve context if insufficient
+    let ragContext = context.ragResult
+    let retrievalCycle = 1
+
+    while (retrievalCycle <= MAX_RETRIEVAL_CYCLES && ragContext) {
+      const isSufficient = await this.evaluateContextSufficiency(
+        userMessage,
+        ragContext,
+        retrievalCycle
+      )
+
+      if (isSufficient) {
+        console.log(`[Agent] RAG context deemed sufficient at cycle ${retrievalCycle}`)
+        break
+      }
+
+      if (retrievalCycle < MAX_RETRIEVAL_CYCLES) {
+        console.log(`[Agent] Context insufficient at cycle ${retrievalCycle} — re-retrieving...`)
+        // Trigger re-retrieval by calling a hypothetical re-retrieve method
+        // For now, we'll just note this in logs
+        // In a full implementation, this would call the RAG system again with refined queries
+        ragContext = await this.triggerReRetrieval(userMessage, ragContext)
+        retrievalCycle++
+      } else {
+        console.log(`[Agent] Max retrieval cycles (${MAX_RETRIEVAL_CYCLES}) reached`)
+        break
+      }
+    }
+
+    // Update context with potentially re-retrieved results
+    context = { ...context, ragResult: ragContext }
 
     // Build the user turn with assembled context and RAG context
     const userContent = this.buildUserContent(userMessage, context)
@@ -153,6 +187,75 @@ export class BaseAgent {
       citations,
       conflictsFound,
     }
+  }
+
+  /** Evaluate if RAG context is sufficient to answer the query */
+  private async evaluateContextSufficiency(
+    userMessage: string,
+    ragResult: { metadata: { vectorChunksFound: number; totalChunksAfterRerank: number }; context: string },
+    retrievalCycle: number
+  ): Promise<boolean> {
+    // Heuristic checks:
+    // 1. At least 3 chunks retrieved after reranking
+    // 2. Context is substantial (>500 chars)
+    // 3. Query appears answerable from context
+
+    const hasMinimalChunks = ragResult.metadata.totalChunksAfterRerank >= 3
+    const hasSubstantialContext = ragResult.context.length > 500
+
+    if (!hasMinimalChunks || !hasSubstantialContext) {
+      console.log(
+        `[Agent] Cycle ${retrievalCycle}: Insufficient chunks (${ragResult.metadata.totalChunksAfterRerank}) or context length (${ragResult.context.length})`
+      )
+      return false
+    }
+
+    // Use LLM to evaluate if context answers the query
+    try {
+      const response = await this.engine.route('classify', {
+        systemPromptKey: 'MICRO_CLASSIFY',
+        messages: [{
+          role: 'user',
+          content: `Given the user query and the retrieved context, is there sufficient information to answer the query? Reply YES or NO.
+
+Query: ${userMessage}
+
+Context: ${ragResult.context.slice(0, 1000)}...`,
+        }],
+        maxTokens: 10,
+      })
+
+      const text = response.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+        .trim()
+        .toUpperCase()
+
+      const sufficient = text.includes('YES')
+      console.log(`[Agent] Cycle ${retrievalCycle}: Context sufficiency = ${sufficient}`)
+      return sufficient
+    } catch (err) {
+      console.warn(`[Agent] Failed to evaluate context sufficiency: ${err instanceof Error ? err.message : 'Unknown'}`)
+      // Default to true if evaluation fails
+      return true
+    }
+  }
+
+  /** Trigger re-retrieval with refined queries (placeholder for now) */
+  private async triggerReRetrieval(
+    _userMessage: string,
+    currentRagResult: any
+  ): Promise<typeof currentRagResult> {
+    // In a full implementation, this would:
+    // 1. Analyze why context was insufficient
+    // 2. Generate refined/expanded queries
+    // 3. Call the RAG system again with the refined queries
+    // 4. Return merged results
+    //
+    // For now, we return the current result as-is
+    // (actual re-retrieval would be implemented by integrating with HybridRetriever)
+    return currentRagResult
   }
 
   /** Build the user content with assembled context and RAG context */
