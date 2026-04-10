@@ -73,6 +73,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const setupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const userTranscriptRef = useRef('')
   const processingRef = useRef(false)  // Prevents overlapping Claude calls
+  const expectingTTSRef = useRef(false)  // Only play audio when we sent text to read
 
   // ─── Audio playback ────────────────────────────────────────────
 
@@ -183,10 +184,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         // Use Gemini's TTS by sending the text as a "user" message
         // Gemini will generate audio for it
+        expectingTTSRef.current = true
         wsRef.current.send(JSON.stringify({
           clientContent: {
             turns: [
-              { role: 'user', parts: [{ text: `Please read this response aloud exactly as written, do not add anything:\n\n${responseText}` }] },
+              { role: 'user', parts: [{ text: `READ ALOUD: ${responseText}` }] },
             ],
             turnComplete: true,
           },
@@ -244,7 +246,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             model: `models/${config.model}`,
             generationConfig: { responseModalities: ['AUDIO'] },
             systemInstruction: {
-              parts: [{ text: 'You are Aria, a voice assistant. When the user speaks, transcribe their speech. When given text to read aloud, speak it naturally in a warm, professional tone. Do not add commentary or change the content.' }],
+              parts: [{ text: 'You are a voice interface. Your ONLY job is to read text aloud when given to you. Do NOT generate your own responses to user speech. When the user speaks, say nothing — just listen. Only speak when explicitly given text to read via a message that starts with "READ ALOUD:".' }],
             },
             // NO tools — all reasoning goes through Claude
           },
@@ -283,9 +285,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               onTranscript?.(inputTranscript, true)
             }
 
-            // Audio response from Gemini (speaking Claude's response)
+            // Audio response from Gemini — only play when we're expecting TTS (Claude's response)
             const parts = (serverContent['modelTurn'] as Record<string, unknown>)?.['parts'] as Array<Record<string, unknown>> | undefined
-            if (parts) {
+            if (parts && expectingTTSRef.current) {
               for (const part of parts) {
                 if (part['inlineData']) {
                   const audioData = part['inlineData'] as Record<string, unknown>
@@ -294,17 +296,26 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
                 }
               }
             }
+            // Ignore Gemini's own text responses — we only use Claude's
 
             if (serverContent['turnComplete']) {
-              // If user spoke, process with Claude
-              const transcript = userTranscriptRef.current
-              if (transcript.trim() && !processingRef.current) {
-                userTranscriptRef.current = ''
-                void processWithClaude(transcript)
-              } else {
-                setState('listening')
-              }
+              const wasTTS = expectingTTSRef.current
+              expectingTTSRef.current = false
               nextPlayTimeRef.current = 0
+
+              if (wasTTS) {
+                // Gemini finished speaking Claude's response — go back to listening
+                setState('listening')
+              } else {
+                // User finished speaking — send transcript to Claude
+                const transcript = userTranscriptRef.current
+                if (transcript.trim() && !processingRef.current) {
+                  userTranscriptRef.current = ''
+                  void processWithClaude(transcript)
+                } else {
+                  setState('listening')
+                }
+              }
               // Keep running delegation activities, clear completed ones
               setToolActivities((prev) => prev.filter((t) => t.status === 'running'))
             }
