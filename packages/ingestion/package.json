@@ -13,6 +13,7 @@
     "@axis/knowledge-graph": "workspace:*",
     "@axis/types": "workspace:*",
     "@prisma/client": "^5.14.0",
+    "bullmq": "^5.0.0",
     "mammoth": "^1.8.0",
     "pdf-parse": "^1.1.1"
   },
