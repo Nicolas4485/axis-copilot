@@ -319,6 +319,60 @@ ariaRouter.post('/save-transcript', async (req: Request, res: Response) => {
   }
 })
 
+// ─── GET /api/aria/delegation-status — Check if agent completed work ──
+
+ariaRouter.get('/delegation-status', async (req: Request, res: Response) => {
+  try {
+    const sessionId = req.query['sessionId'] as string
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId required', code: 'MISSING_PARAM', requestId: req.requestId })
+      return
+    }
+
+    // Find delegation results tagged with this session
+    // tags is a Json column, so we use raw SQL for array contains
+    const results = await prisma.agentMemory.findMany({
+      where: {
+        userId: req.userId!,
+        memoryType: 'EPISODIC',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    })
+
+    // Filter client-side for session tag match (Json column limitation)
+    const sessionResults = results.filter((r) => {
+      const tags = r.tags as string[] | null
+      return tags?.includes(sessionId)
+    })
+
+    // Parse which are delegation results
+    const delegations = sessionResults
+      .filter((r) => {
+        const tags = r.tags as string[]
+        return tags.some((t) => ['product', 'process', 'competitive', 'stakeholder'].includes(t))
+      })
+      .map((r) => {
+        const tags = r.tags as string[]
+        const workerType = tags.find((t) => ['product', 'process', 'competitive', 'stakeholder'].includes(t)) ?? 'unknown'
+        const names: Record<string, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
+        return {
+          id: r.id,
+          agent: names[workerType] ?? workerType,
+          workerType,
+          status: 'completed' as const,
+          result: r.content,
+          completedAt: r.createdAt.toISOString(),
+        }
+      })
+
+    res.json({ delegations, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to get delegation status', code: 'DELEGATION_STATUS_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
 // ─── POST /api/aria/memory-refresh ───────────────────────────────
 // Returns updated system instruction for long live sessions
 

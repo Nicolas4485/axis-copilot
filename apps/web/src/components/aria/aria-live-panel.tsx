@@ -53,20 +53,53 @@ export function AriaLivePanel({ sessionId, autoConnect = false, autoMic = false 
     },
   })
 
-  // Auto-connect and auto-enable mic on mount
+  // Auto-connect and auto-enable mic — runs once on mount only
   useEffect(() => {
-    if (autoConnect && !autoConnectDone.current && !ariaLive.isConnected) {
-      autoConnectDone.current = true
-      void ariaLive.connect()
-    }
-  }, [autoConnect, ariaLive.isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!autoConnect || autoConnectDone.current) return
+    autoConnectDone.current = true
 
-  // Auto-enable mic once connected
+    // Delay slightly to ensure component is fully mounted
+    const timer = setTimeout(async () => {
+      try {
+        await ariaLive.connect()
+        // Enable mic after connection if requested
+        if (autoMic) {
+          setTimeout(() => ariaLive.toggleMic(), 500)
+        }
+      } catch {
+        // Connection failed — user can retry manually
+      }
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, []) // Intentionally empty — runs once on mount
+
+  // Load previous session messages on mount
   useEffect(() => {
-    if (autoMic && ariaLive.isConnected && !ariaLive.isMicOn) {
-      ariaLive.toggleMic()
-    }
-  }, [autoMic, ariaLive.isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
+    const apiUrl = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
+    const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
+    if (!token) return
+
+    fetch(`${apiUrl}/api/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => res.json())
+      .then((data: { messages?: Array<{ role: string; content: string; createdAt: string }> }) => {
+        if (data.messages && data.messages.length > 0) {
+          const history: TranscriptEntry[] = data.messages
+            .filter((m) => m.content.trim().length > 0)
+            .map((m) => ({
+              role: m.role === 'USER' ? 'user' as const : 'aria' as const,
+              text: m.content,
+              timestamp: new Date(m.createdAt),
+            }))
+          if (history.length > 0) {
+            setTranscriptEntries(history)
+          }
+        }
+      })
+      .catch(() => { /* session load failed — start fresh */ })
+  }, [sessionId])
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -160,23 +193,49 @@ export function AriaLivePanel({ sessionId, autoConnect = false, autoMic = false 
               </div>
             ))}
 
-            {/* Tool activity */}
+            {/* Agent activity — show who's working and their status */}
             {ariaLive.toolActivities.length > 0 && (
-              <div className="flex gap-2 flex-wrap">
-                {ariaLive.toolActivities.map((activity, i) => (
-                  <span
-                    key={i}
-                    className={`text-xs px-2 py-1 rounded-full font-mono ${
+              <div className="space-y-2">
+                {ariaLive.toolActivities.map((activity, i) => {
+                  const agentNames: Record<string, string> = {
+                    delegate_product_analysis: 'Sean (Product)',
+                    delegate_process_analysis: 'Kevin (Process)',
+                    delegate_competitive_analysis: 'Mel (Competitive)',
+                    delegate_stakeholder_analysis: 'Anjie (Stakeholder)',
+                  }
+                  const agentName = agentNames[activity.tool]
+                  const isAgent = !!agentName
+                  const displayName = agentName ?? activity.tool.replace(/_/g, ' ')
+
+                  return (
+                    <div key={i} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${
                       activity.status === 'running'
-                        ? 'bg-yellow-500/20 text-yellow-400'
+                        ? 'bg-yellow-500/10 border border-yellow-500/20'
                         : activity.status === 'completed'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-red-500/20 text-red-400'
-                    }`}
-                  >
-                    {activity.tool.replace(/_/g, ' ')}
-                  </span>
-                ))}
+                        ? 'bg-emerald-500/10 border border-emerald-500/20'
+                        : 'bg-red-500/10 border border-red-500/20'
+                    }`}>
+                      {activity.status === 'running' && (
+                        <div className="w-3 h-3 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin" />
+                      )}
+                      {activity.status === 'completed' && (
+                        <span className="text-emerald-400">✓</span>
+                      )}
+                      {activity.status === 'error' && (
+                        <span className="text-red-400">✗</span>
+                      )}
+                      <span className={
+                        activity.status === 'running' ? 'text-yellow-400'
+                        : activity.status === 'completed' ? 'text-emerald-400'
+                        : 'text-red-400'
+                      }>
+                        {isAgent && activity.status === 'running' ? `${displayName} is working...` :
+                         isAgent && activity.status === 'completed' ? `${displayName} completed` :
+                         displayName}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
             )}
 

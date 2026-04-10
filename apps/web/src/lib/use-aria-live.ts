@@ -492,10 +492,13 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             setToolActivities((prev) =>
               prev.map((t) => t.tool === name ? { ...t, status: 'completed' } : t)
             )
+            // Inject agent result into transcript
+            onAriaResponse?.(`\n\n📋 **${workerName} completed their analysis.** Check the delegation results below.\n`)
           }).catch(() => {
             setToolActivities((prev) =>
               prev.map((t) => t.tool === name ? { ...t, status: 'error' } : t)
             )
+            onAriaResponse?.(`\n\n⚠️ ${workerName} encountered an error during analysis.\n`)
           })
 
           // Return immediate result so Aria keeps talking
