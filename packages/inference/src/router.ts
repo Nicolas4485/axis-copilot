@@ -1,14 +1,17 @@
-// Model Router — maps tasks to Anthropic models
-// Uses the Advisor Strategy: Sonnet as executor, Opus as advisor
-// Sonnet handles most work; consults Opus only for complex decisions
-// Haiku: simple/fast tasks (classification, extraction, verification)
-// Sonnet + Opus advisor: complex tasks (agent reasoning, reports)
+// Model Router — maps tasks to the correct backend (local Qwen3 or Anthropic)
+//
+// Local-first routing:
+//   classify, entity_extract, entity_verify  → Qwen3 8B via Ollama (fallback: Haiku)
+//
+// Anthropic-only routing:
+//   Everything else → Haiku / Sonnet / Sonnet+Opus advisor
 
 import type { InferenceTask, ClaudeModel } from './types.js'
 
 /** Which model handles each task type */
 export interface RouteTarget {
-  primary: 'claude'
+  primary: 'local' | 'claude'
+  /** Claude model to use when primary is 'claude', or as fallback for local tasks */
   claudeModel: ClaudeModel
   /** Optional advisor model — executor consults this for complex decisions */
   advisor?: ClaudeModel | undefined
@@ -21,16 +24,20 @@ export interface RouteTarget {
 }
 
 /**
- * Routing table: task → Anthropic model selection.
+ * Routing table: task → backend selection.
+ *
+ * Local (Qwen3 8B via Ollama) — free, fast for pipeline tasks:
+ *   classify, entity_extract, entity_verify
+ *   Falls back to Claude Haiku when Ollama is unavailable.
  *
  * Haiku (fast, cheap):
- *   classify, entity_extract, doc_type_detect, client_attribute,
- *   entity_verify, contextual_retrieval, query_expansion, relevance_score
+ *   doc_type_detect, client_attribute, contextual_retrieval,
+ *   query_expansion, relevance_score
  *
  * Sonnet (balanced):
  *   context_compress, session_summary, user_email
  *
- * Opus 4.6 (complex reasoning):
+ * Sonnet + Opus advisor (complex reasoning):
  *   agent_response, user_response, user_report
  */
 const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
@@ -80,19 +87,27 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     jsonMode: false,
   },
 
-  // ─── Haiku — fast, simple tasks ─────────────────────────────
+  // ─── Local (Qwen3) with Haiku fallback — pipeline tasks that don't need cloud ──
   classify: {
-    primary: 'claude',
-    claudeModel: 'haiku',
+    primary: 'local',
+    claudeModel: 'haiku',   // Haiku fallback when Ollama is unavailable
     maxTokens: 150,
     jsonMode: true,
   },
   entity_extract: {
-    primary: 'claude',
+    primary: 'local',
     claudeModel: 'haiku',
     maxTokens: 500,
     jsonMode: true,
   },
+  entity_verify: {
+    primary: 'local',
+    claudeModel: 'haiku',
+    maxTokens: 10,
+    jsonMode: false,
+  },
+
+  // ─── Haiku — fast, simple cloud tasks ───────────────────────
   doc_type_detect: {
     primary: 'claude',
     claudeModel: 'haiku',
@@ -104,12 +119,6 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     claudeModel: 'haiku',
     maxTokens: 150,
     jsonMode: true,
-  },
-  entity_verify: {
-    primary: 'claude',
-    claudeModel: 'haiku',
-    maxTokens: 10,
-    jsonMode: false,
   },
   contextual_retrieval: {
     primary: 'claude',
@@ -139,24 +148,25 @@ export function getRoute(task: InferenceTask): RouteTarget {
 }
 
 /**
- * Check if a task uses a specific model tier.
+ * Check if a task should be routed to local Ollama first.
  */
-export function getModelForTask(task: InferenceTask): ClaudeModel {
-  return ROUTING_TABLE[task].claudeModel
+export function isLocalTask(task: InferenceTask): boolean {
+  return ROUTING_TABLE[task].primary === 'local'
 }
 
 /**
- * No fallback needed — all tasks route directly to Anthropic.
- * Kept for backward compatibility with InferenceEngine.
+ * Get the Haiku fallback for local tasks when Ollama is unavailable.
+ * Returns null for cloud-only tasks (no fallback needed).
  */
-export function isLocalTask(_task: InferenceTask): boolean {
-  return false
+export function getFallback(task: InferenceTask): { target: 'claude'; model: ClaudeModel } | null {
+  const route = ROUTING_TABLE[task]
+  if (route.primary !== 'local') return null
+  return { target: 'claude', model: route.claudeModel }
 }
 
-export function hasFallback(_task: InferenceTask): boolean {
-  return false
-}
-
-export function getFallback(_task: InferenceTask): { target: 'claude'; model: ClaudeModel } | null {
-  return null
+/**
+ * Check if a task uses a specific model tier (cloud path).
+ */
+export function getModelForTask(task: InferenceTask): ClaudeModel {
+  return ROUTING_TABLE[task].claudeModel
 }

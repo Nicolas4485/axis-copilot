@@ -70,7 +70,13 @@ export class InferenceEngine {
     const systemPrompt = getPromptText(options.systemPromptKey)
     const maxTokens = options.maxTokens ?? route.maxTokens
 
-    // All tasks route through Anthropic (with optional Opus advisor for complex tasks)
+    // Route local tasks (classify, entity_extract, entity_verify) to Ollama/Qwen3.
+    // executeLocal() automatically falls back to Claude Haiku when Ollama is unavailable.
+    if (isLocalTask(task)) {
+      return this.executeLocal(task, systemPrompt, options, maxTokens, route.jsonMode)
+    }
+
+    // All other tasks route through Anthropic (with optional Opus advisor for complex tasks)
     const claudeModel = route.claudeModel
     return this.executeClaude(task, claudeModel, systemPrompt, {
       ...options,
