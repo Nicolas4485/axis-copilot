@@ -4,6 +4,7 @@
 import { InferenceEngine } from '@axis/inference'
 import type { InferenceContentBlock, InferenceMessage } from '@axis/inference'
 import { InfiniteMemory } from '@axis/memory'
+import { RAGEngine } from '@axis/rag'
 import { ToolRegistry } from './tool-registry.js'
 import type {
   AgentConfig,
@@ -12,6 +13,7 @@ import type {
   Citation,
   ConflictFound,
   MemoryUpdate,
+  RAGResult,
   ToolResult,
 } from './types.js'
 
@@ -23,12 +25,14 @@ export class BaseAgent {
   protected engine: InferenceEngine
   protected toolRegistry: ToolRegistry
   protected memory: InfiniteMemory
+  protected rag: RAGEngine | null
 
-  constructor(config: AgentConfig, engine: InferenceEngine, memory?: InfiniteMemory) {
+  constructor(config: AgentConfig, engine: InferenceEngine, memory?: InfiniteMemory, rag?: RAGEngine) {
     this.config = config
     this.engine = engine
     this.toolRegistry = new ToolRegistry()
     this.memory = memory ?? new InfiniteMemory({ engine })
+    this.rag = rag ?? null
   }
 
   /**
@@ -65,10 +69,7 @@ export class BaseAgent {
 
       if (retrievalCycle < MAX_RETRIEVAL_CYCLES) {
         console.log(`[Agent] Context insufficient at cycle ${retrievalCycle} — re-retrieving...`)
-        // Trigger re-retrieval by calling a hypothetical re-retrieve method
-        // For now, we'll just note this in logs
-        // In a full implementation, this would call the RAG system again with refined queries
-        ragContext = await this.triggerReRetrieval(userMessage, ragContext)
+        ragContext = await this.triggerReRetrieval(userMessage, ragContext, context)
         retrievalCycle++
       } else {
         console.log(`[Agent] Max retrieval cycles (${MAX_RETRIEVAL_CYCLES}) reached`)
@@ -242,20 +243,69 @@ Context: ${ragResult.context.slice(0, 1000)}...`,
     }
   }
 
-  /** Trigger re-retrieval with refined queries (placeholder for now) */
+  /**
+   * Re-retrieval: expand the user query into 2 alternative phrasings,
+   * re-query RAG with the best alternative, and return whichever result has
+   * more chunks. Falls back to the current result when RAG engine is unavailable.
+   */
   private async triggerReRetrieval(
-    _userMessage: string,
-    currentRagResult: any
-  ): Promise<typeof currentRagResult> {
-    // In a full implementation, this would:
-    // 1. Analyze why context was insufficient
-    // 2. Generate refined/expanded queries
-    // 3. Call the RAG system again with the refined queries
-    // 4. Return merged results
-    //
-    // For now, we return the current result as-is
-    // (actual re-retrieval would be implemented by integrating with HybridRetriever)
-    return currentRagResult
+    userMessage: string,
+    currentRagResult: RAGResult,
+    context: AgentContext
+  ): Promise<RAGResult> {
+    if (!this.rag) {
+      console.log('[Agent] No RAG engine available for re-retrieval — keeping current result')
+      return currentRagResult
+    }
+
+    try {
+      // Step 1: Generate an expanded/rephrased query using InferenceEngine
+      const expansionResponse = await this.engine.route('query_expansion', {
+        systemPromptKey: 'MICRO_CLASSIFY',
+        messages: [{
+          role: 'user',
+          content: `The following query did not retrieve sufficient context from the knowledge base. Rewrite it in 1-2 alternative phrasings that might match different terminology in the documents. Output only the rephrased queries, one per line, no explanation.
+
+Original query: ${userMessage}`,
+        }],
+        maxTokens: 150,
+      })
+
+      const expansionText = expansionResponse.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+        .trim()
+
+      const expandedQueries = expansionText
+        .split('\n')
+        .map((q) => q.replace(/^\d+[\.\)]\s*/, '').trim())
+        .filter((q) => q.length > 10)
+        .slice(0, 2)
+
+      if (expandedQueries.length === 0) return currentRagResult
+
+      // Step 2: Re-query with the first expanded query
+      const expandedQuery = expandedQueries[0]!
+      console.log(`[Agent] Re-retrieval query: "${expandedQuery}"`)
+
+      const newResult = await this.rag.query(expandedQuery, context.userId, context.clientId)
+
+      // Step 3: Return whichever result has more chunks
+      const currentChunks = currentRagResult.metadata?.totalChunksAfterRerank ?? 0
+      const newChunks = newResult.metadata?.totalChunksAfterRerank ?? 0
+
+      if (newChunks > currentChunks) {
+        console.log(`[Agent] Re-retrieval improved: ${currentChunks} → ${newChunks} chunks`)
+        return newResult
+      }
+
+      console.log(`[Agent] Re-retrieval did not improve (${currentChunks} → ${newChunks}), keeping original`)
+      return currentRagResult
+    } catch (err) {
+      console.warn(`[Agent] Re-retrieval failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      return currentRagResult
+    }
   }
 
   /** Build the user content with assembled context and RAG context */

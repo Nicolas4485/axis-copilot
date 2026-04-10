@@ -5,6 +5,7 @@
 
 import { InferenceEngine } from '@axis/inference'
 import type { InfiniteMemory } from '@axis/memory'
+import type { RAGEngine } from '@axis/rag'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -26,7 +27,7 @@ const STAKEHOLDER_CONFIG: AgentConfig = {
 }
 
 export class StakeholderAgent extends BaseAgent {
-  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
-    super(STAKEHOLDER_CONFIG, engine, memory)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory, rag?: RAGEngine) {
+    super(STAKEHOLDER_CONFIG, engine, memory, rag)
   }
 }

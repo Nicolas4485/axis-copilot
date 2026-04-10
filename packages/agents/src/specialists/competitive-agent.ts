@@ -5,6 +5,7 @@
 
 import { InferenceEngine } from '@axis/inference'
 import type { InfiniteMemory } from '@axis/memory'
+import type { RAGEngine } from '@axis/rag'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -25,7 +26,7 @@ const COMPETITIVE_CONFIG: AgentConfig = {
 }
 
 export class CompetitiveAgent extends BaseAgent {
-  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
-    super(COMPETITIVE_CONFIG, engine, memory)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory, rag?: RAGEngine) {
+    super(COMPETITIVE_CONFIG, engine, memory, rag)
   }
 }

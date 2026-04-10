@@ -5,6 +5,7 @@
 
 import { InferenceEngine } from '@axis/inference'
 import type { InfiniteMemory } from '@axis/memory'
+import type { RAGEngine } from '@axis/rag'
 import { BaseAgent } from '../base-agent.js'
 import type { AgentConfig } from '../types.js'
 
@@ -27,7 +28,7 @@ const PROCESS_CONFIG: AgentConfig = {
 }
 
 export class ProcessAgent extends BaseAgent {
-  constructor(engine: InferenceEngine, memory?: InfiniteMemory) {
-    super(PROCESS_CONFIG, engine, memory)
+  constructor(engine: InferenceEngine, memory?: InfiniteMemory, rag?: RAGEngine) {
+    super(PROCESS_CONFIG, engine, memory, rag)
   }
 }

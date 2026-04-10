@@ -60,12 +60,13 @@ export class Aria {
     this.gemini = new GeminiClient()
     this.toolRegistry = new ToolRegistry()
 
-    // Worker agents — silent analytical specialists
+    // Worker agents — silent analytical specialists.
+    // Pass the RAG engine so they can do re-retrieval when context is insufficient.
     this.workers = {
-      product: new ProductAgent(this.engine, this.memory),
-      process: new ProcessAgent(this.engine, this.memory),
-      competitive: new CompetitiveAgent(this.engine, this.memory),
-      stakeholder: new StakeholderAgent(this.engine, this.memory),
+      product: new ProductAgent(this.engine, this.memory, this.rag),
+      process: new ProcessAgent(this.engine, this.memory, this.rag),
+      competitive: new CompetitiveAgent(this.engine, this.memory, this.rag),
+      stakeholder: new StakeholderAgent(this.engine, this.memory, this.rag),
     }
   }
 
