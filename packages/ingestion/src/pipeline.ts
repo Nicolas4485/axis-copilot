@@ -5,6 +5,7 @@
 
 import { createHash } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
+import { Redis } from 'ioredis'
 import { InferenceEngine } from '@axis/inference'
 import { getParser } from './parsers/index.js'
 import { DriveDiscovery } from './drive-discovery.js'
@@ -18,6 +19,9 @@ import type {
   SourceType,
   DocType,
 } from './types.js'
+
+/** Channel name for ingestion completion events */
+const INGESTION_CHANNEL = 'axis:ingestion:complete'
 
 const CHUNK_TARGET_TOKENS = 500    // 400–600 range
 const CHUNK_MIN_TOKENS = 400
@@ -40,11 +44,13 @@ export class IngestionPipeline {
   private engine: InferenceEngine
   private discovery: DriveDiscovery
   private prisma: PrismaClient
+  private redis: Redis | null
   private onProgress?: ((event: IngestionProgress) => void) | undefined
 
   constructor(options?: {
     engine?: InferenceEngine
     prisma?: PrismaClient
+    redis?: Redis
     onProgress?: (event: IngestionProgress) => void
   }) {
     if (!options?.prisma) {
@@ -54,6 +60,23 @@ export class IngestionPipeline {
     this.prisma = options.prisma
     this.discovery = new DriveDiscovery(this.engine)
     this.onProgress = options.onProgress
+
+    // Wire Redis pub/sub if available
+    if (options?.redis) {
+      this.redis = options.redis
+    } else if (process.env['REDIS_URL']) {
+      try {
+        this.redis = new Redis(process.env['REDIS_URL'], {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1,
+        })
+        this.redis.on('error', () => { /* non-critical — silently degrade */ })
+      } catch {
+        this.redis = null
+      }
+    } else {
+      this.redis = null
+    }
   }
 
   /**
@@ -784,7 +807,7 @@ Properties: ${JSON.stringify(entity.properties)}`,
     })
   }
 
-  /** Step 14: Publish ingestion event (log for now, Redis pub/sub later) */
+  /** Step 14: Publish ingestion completion event via Redis pub/sub */
   private async publishEvent(
     documentId: string,
     userId: string,
@@ -793,14 +816,26 @@ Properties: ${JSON.stringify(entity.properties)}`,
     chunkCount: number,
     entityCount: number
   ): Promise<void> {
-    // Log the event (Redis pub/sub will be wired when we add real-time updates)
+    const payload = JSON.stringify({
+      documentId,
+      userId,
+      clientId,
+      docType,
+      chunkCount,
+      entityCount,
+      timestamp: new Date().toISOString(),
+    })
+
     console.log(`[Pipeline] Event: document_ingested | doc=${documentId} user=${userId} client=${clientId ?? 'none'} type=${docType} chunks=${chunkCount} entities=${entityCount}`)
 
-    // TODO: Wire Redis pub/sub
-    // await redis.publish('axis:ingestion:complete', JSON.stringify({
-    //   documentId, userId, clientId, docType, chunkCount, entityCount,
-    //   timestamp: new Date().toISOString(),
-    // }))
+    if (this.redis) {
+      try {
+        await this.redis.publish(INGESTION_CHANNEL, payload)
+      } catch (err) {
+        // Non-critical — log only, pipeline must not fail because Redis is down
+        console.warn(`[Pipeline] Redis publish failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      }
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────
