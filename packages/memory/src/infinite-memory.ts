@@ -554,16 +554,37 @@ export class InfiniteMemory {
     }
   }
 
-  /** Tier 5: Get archival note */
+  /** Tier 5: Fetch summaries of recent session exports for archival context */
   private async getArchivalNote(userId: string): Promise<string | null> {
     if (!this.prisma) return null
 
     try {
-      const exportCount = await this.prisma.exportRecord.count({
+      // Fetch the 5 most recent exports with session title and destination
+      const exports = await this.prisma.exportRecord.findMany({
         where: { session: { userId } },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        include: {
+          session: {
+            select: { title: true, updatedAt: true },
+          },
+        },
       })
-      if (exportCount === 0) return null
-      return `${exportCount} archived session export(s) available. Use search_knowledge_base to query them.`
+
+      if (exports.length === 0) return null
+
+      const lines = exports.map((e) => {
+        const title = e.session.title ?? 'Untitled session'
+        const date = e.createdAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+        const dest = e.destination.toLowerCase()
+        const link = e.externalUrl ? ` — ${e.externalUrl}` : ''
+        return `• "${title}" exported to ${dest} on ${date}${link}`
+      })
+
+      const totalCount = await this.prisma.exportRecord.count({ where: { session: { userId } } })
+      const headerLine = `${totalCount} archived export(s). Most recent:`
+
+      return [headerLine, ...lines].join('\n')
     } catch {
       return null
     }
