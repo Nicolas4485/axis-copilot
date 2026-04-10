@@ -4,6 +4,7 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
+import { rateLimit } from 'express-rate-limit'
 import { prisma } from '../lib/prisma.js'
 import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
@@ -14,6 +15,20 @@ const engine = new InferenceEngine()
 const aria = new Aria({ engine, prisma })
 
 export const ariaRouter = Router()
+
+// SEC-1 KNOWN ISSUE: /session-token returns the raw Gemini API key to the browser.
+// This is not production-safe — any authenticated user can extract the key from devtools
+// and make unlimited Gemini API calls at your expense.
+// TODO: Replace with Gemini ephemeral token endpoint or a server-side WebSocket proxy.
+// Rate limit reduces blast radius in the meantime.
+const sessionTokenRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5, // 5 requests per minute per user — Live sessions rarely need more
+  keyGenerator: (req: Request) => req.userId ?? req.ip ?? 'anonymous',
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Session token rate limit exceeded', code: 'SESSION_TOKEN_RATE_LIMITED' },
+})
 
 // ─── Validation schemas ──────────────────────────────────────────
 
@@ -42,7 +57,7 @@ const ariaMessageSchema = z.object({
 // ─── POST /api/aria/session-token ────────────────────────────────
 // Returns system instruction + tool declarations for Gemini Live session
 
-ariaRouter.post('/session-token', async (req: Request, res: Response) => {
+ariaRouter.post('/session-token', sessionTokenRateLimit, async (req: Request, res: Response) => {
   try {
     const parsed = sessionTokenSchema.safeParse(req.body)
     if (!parsed.success) {
