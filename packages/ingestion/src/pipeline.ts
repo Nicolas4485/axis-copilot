@@ -382,46 +382,70 @@ Preview: ${parsed.text.slice(0, 300)}`,
     return chunks
   }
 
-  /** Step 6.5: Add contextual context to chunks using Claude */
+  /**
+   * Step 6.5: Add contextual prefixes to chunks using Claude Haiku.
+   *
+   * Batches up to 20 chunks per API call (was 1 call per chunk).
+   * Each batch asks Haiku to emit one context sentence per chunk, in order,
+   * separated by the delimiter "---CHUNK_CTX---". This reduces N API calls
+   * to ceil(N/20) calls — a ~20× reduction for typical documents.
+   */
   private async addContextualRetrieval(chunks: DocumentChunk[], parsed: ParsedDocument): Promise<DocumentChunk[]> {
-    const docSummary = parsed.metadata.title
-    const fullDoc = parsed.text.slice(0, 2000) // Use first 2000 chars as document context
+    const BATCH_SIZE = 20
+    const docTitle = parsed.metadata.title
+    const docExcerpt = parsed.text.slice(0, 2000)
+    const DELIMITER = '---CHUNK_CTX---'
 
     const contextualizedChunks: DocumentChunk[] = []
 
-    for (const chunk of chunks) {
+    for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+      const batch = chunks.slice(i, i + BATCH_SIZE)
+
+      let contexts: string[] = batch.map(() => '') // default to empty context
+
       try {
+        const chunksListing = batch
+          .map((c, idx) => `[${idx + 1}] ${c.content.slice(0, 500)}`)
+          .join('\n\n')
+
         const response = await this.engine.route('contextual_retrieval', {
-          systemPromptKey: 'ENTITY_EXTRACT_RAW', // Reuse a simple prompt
+          systemPromptKey: 'ENTITY_EXTRACT_RAW',
           messages: [{
             role: 'user',
-            content: `Given this document titled "${docSummary}", what is the context of this chunk? Respond in 1-2 sentences.
+            content: `Document title: "${docTitle}"
+Document excerpt: ${docExcerpt}
 
-Document excerpt: ${fullDoc}
+For each numbered chunk below, write exactly one sentence describing its context within the document. Output ONLY the ${batch.length} sentences, separated by "${DELIMITER}" — no numbering, no extra text.
 
-Chunk: ${chunk.content.slice(0, 500)}`,
+${chunksListing}`,
           }],
-          maxTokens: 100,
+          maxTokens: batch.length * 120,
         })
 
-        const contextText = response.content
+        const text = response.content
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
           .map((b) => b.text)
           .join('')
           .trim()
 
-        // Prepend context to chunk
-        const prependedContent = contextText ? `${contextText}\n\n${chunk.content}` : chunk.content
+        const parts = text.split(DELIMITER).map((s) => s.trim())
+        // Only use parts if count matches; otherwise fall through to empty contexts
+        if (parts.length === batch.length) {
+          contexts = parts
+        }
+      } catch (err) {
+        console.warn(`[Pipeline] Contextual retrieval batch ${i}–${i + batch.length} failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      }
 
+      for (let j = 0; j < batch.length; j++) {
+        const chunk = batch[j]!
+        const ctx = contexts[j] ?? ''
+        const prependedContent = ctx ? `${ctx}\n\n${chunk.content}` : chunk.content
         contextualizedChunks.push({
           ...chunk,
           content: prependedContent,
           tokens: estimateTokens(prependedContent),
         })
-      } catch (err) {
-        console.warn(`[Pipeline] Contextual retrieval failed for chunk ${chunk.chunkIndex}: ${err instanceof Error ? err.message : 'Unknown'}`)
-        // Fall back to original chunk if retrieval fails
-        contextualizedChunks.push(chunk)
       }
     }
 
