@@ -1,14 +1,15 @@
-// Infinite Memory — 5-tier memory system for agent context
+// Infinite Memory – 5-tier memory system for agent context
 //
-// Tier 1: Working Memory (Prisma)    — current session messages from DB
-// Tier 2: Summary Memory (Prisma)    — compressed session summaries
-// Tier 3: Episodic Memory (pgvector) — searchable past interactions
-// Tier 4: Semantic Memory (Neo4j)    — knowledge graph relationships
-// Tier 5: Archival Memory            — archived session references
+// Tier 1: Working Memory (Redis)     – current session messages (fast, ephemeral)
+// Tier 2: Summary Memory (Prisma)    – compressed session summaries
+// Tier 3: Episodic Memory (Prisma)   – searchable past interactions
+// Tier 4: Semantic Memory (Neo4j)    – knowledge graph relationships
+// Tier 5: Archival Memory            – archived session references
 //
 // buildAgentContext() assembles <= 6000 tokens from all tiers.
 
 import type { PrismaClient } from '@prisma/client'
+import Redis from 'ioredis'
 import { InferenceEngine } from '@axis/inference'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 
@@ -56,7 +57,7 @@ export interface AssembledContext {
 }
 
 const TIER_BUDGETS = {
-  WORKING: 10000,   // Last 50 messages — enough for deep brainstorming
+  WORKING: 10000,   // Last 50 messages – enough for deep brainstorming
   SUMMARY: 2000,    // Cross-session context
   EPISODIC: 2000,   // Past interactions
   SEMANTIC: 1000,   // Graph context
@@ -65,6 +66,7 @@ const TIER_BUDGETS = {
 
 const TOTAL_BUDGET = 15000
 const WORKING_MEMORY_MAX_MESSAGES = 50
+const REDIS_WORKING_MEMORY_TTL = 86400 // 24 hours
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
@@ -75,16 +77,29 @@ export class InfiniteMemory {
   private neo4jClient: Neo4jClient
   private graphOps: GraphOperations
   private prisma: PrismaClient | null
+  private redis: Redis | null
 
   constructor(options?: {
     engine?: InferenceEngine | undefined
     neo4jClient?: Neo4jClient | undefined
     prisma?: PrismaClient | undefined
+    redis?: Redis | undefined
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
     this.neo4jClient = options?.neo4jClient ?? new Neo4jClient()
     this.graphOps = new GraphOperations(this.neo4jClient)
     this.prisma = options?.prisma ?? null
+    this.redis = options?.redis ?? null
+
+    // Initialize Redis if not provided but REDIS_URL is set
+    if (!this.redis && process.env['REDIS_URL']) {
+      try {
+        this.redis = new Redis(process.env['REDIS_URL'])
+      } catch (err) {
+        console.warn('[InfiniteMemory] Failed to initialize Redis:', err instanceof Error ? err.message : 'Unknown')
+        this.redis = null
+      }
+    }
   }
 
   /**
@@ -101,7 +116,7 @@ export class InfiniteMemory {
     const parts: string[] = []
     let tokensRemaining = TOTAL_BUDGET
 
-    // Tier 1: Working Memory — recent messages from current session
+    // Tier 1: Working Memory – recent messages from current session (Redis)
     const recentMessages = await this.getWorkingMemory(sessionId)
     if (recentMessages.length > 0) {
       tiersUsed.push('WORKING')
@@ -111,7 +126,7 @@ export class InfiniteMemory {
       tokensRemaining -= workingTokens
     }
 
-    // Tier 2: Summary Memory — summaries from OTHER sessions with same client
+    // Tier 2: Summary Memory – summaries from OTHER sessions with same client
     const summary = await this.getSessionSummary(sessionId, userId, clientId)
     let sessionSummary: string | null = null
     if (summary) {
@@ -122,7 +137,7 @@ export class InfiniteMemory {
       tokensRemaining -= estimateTokens(summaryText)
     }
 
-    // Tier 3: Episodic Memory — relevant past interactions via Prisma
+    // Tier 3: Episodic Memory – relevant past interactions via Prisma
     const episodicMemories = await this.searchEpisodicMemory(
       currentMessage, userId, clientId,
       Math.min(tokensRemaining, TIER_BUDGETS.EPISODIC)
@@ -137,7 +152,7 @@ export class InfiniteMemory {
       tokensRemaining -= estimateTokens(episodicText)
     }
 
-    // Tier 4: Semantic Memory — knowledge graph context from Neo4j
+    // Tier 4: Semantic Memory – knowledge graph context from Neo4j
     if (this.neo4jClient.isAvailable() && clientId) {
       try {
         const graphContext = await this.getSemanticMemory(clientId, tokensRemaining)
@@ -147,11 +162,11 @@ export class InfiniteMemory {
           tokensRemaining -= estimateTokens(graphContext)
         }
       } catch {
-        // Neo4j failed — continue without graph context
+        // Neo4j failed – continue without graph context
       }
     }
 
-    // Tier 5: Archival — note existence of archived sessions
+    // Tier 5: Archival – note existence of archived sessions
     const archiveNote = await this.getArchivalNote(userId)
     if (archiveNote) {
       tiersUsed.push('ARCHIVAL')
@@ -173,17 +188,45 @@ export class InfiniteMemory {
   }
 
   /**
-   * Add a message to working memory.
-   * Messages are stored in the database, so this is a no-op — they're already there.
-   * We just track them for the summarisation trigger.
+   * Add a message to working memory (Redis).
+   * Stores message in Redis with session-based TTL for fast retrieval.
    */
   async addToWorkingMemory(
-    _sessionId: string,
-    _role: 'USER' | 'ASSISTANT' | 'SYSTEM',
-    _content: string
+    sessionId: string,
+    role: 'USER' | 'ASSISTANT' | 'SYSTEM',
+    content: string
   ): Promise<void> {
-    // Messages are already stored in the database via the API routes.
-    // This method exists for the interface — no additional storage needed.
+    if (!this.redis) {
+      // No Redis available – messages are in Prisma already
+      return
+    }
+
+    try {
+      const timestamp = new Date().toISOString()
+      const tokens = estimateTokens(content)
+      const entry: WorkingMemoryEntry = {
+        role,
+        content,
+        timestamp,
+        tokens,
+      }
+
+      // Store in Redis as a list per session
+      const key = `working-memory:${sessionId}`
+      const serialized = JSON.stringify(entry)
+
+      // Push to list
+      await this.redis.rpush(key, serialized)
+
+      // Trim list to keep only last 50 messages
+      await this.redis.ltrim(key, -WORKING_MEMORY_MAX_MESSAGES, -1)
+
+      // Set expiry (24 hours)
+      await this.redis.expire(key, REDIS_WORKING_MEMORY_TTL)
+    } catch (err) {
+      console.warn('[InfiniteMemory] Failed to store working memory in Redis:', err instanceof Error ? err.message : 'Unknown')
+      // Silently fail – not critical if Redis is down
+    }
   }
 
   /**
@@ -243,10 +286,36 @@ export class InfiniteMemory {
     })
   }
 
-  // ─── Private tier access methods ───────────────────────────────
+  // ──── Private tier access methods ──────────────────────────────────────────────
 
-  /** Tier 1: Get recent messages from the current session via Prisma */
+  /** Tier 1: Get recent messages from the current session via Redis, fallback to Prisma */
   private async getWorkingMemory(sessionId: string): Promise<WorkingMemoryEntry[]> {
+    // Try Redis first
+    if (this.redis) {
+      try {
+        const key = `working-memory:${sessionId}`
+        const rawEntries = await this.redis.lrange(key, 0, -1)
+
+        if (rawEntries.length > 0) {
+          const entries: WorkingMemoryEntry[] = []
+          for (const raw of rawEntries) {
+            try {
+              entries.push(JSON.parse(raw) as WorkingMemoryEntry)
+            } catch {
+              // Skip malformed entries
+            }
+          }
+          if (entries.length > 0) {
+            return entries
+          }
+        }
+      } catch (err) {
+        console.warn('[InfiniteMemory] Failed to fetch from Redis:', err instanceof Error ? err.message : 'Unknown')
+        // Fall through to Prisma
+      }
+    }
+
+    // Fallback to Prisma
     if (!this.prisma) return []
 
     try {
@@ -425,7 +494,7 @@ export class InfiniteMemory {
     }
   }
 
-  // ─── Formatting helpers ────────────────────────────────────────
+  // ──── Formatting helpers ────────────────────────────────────────────────────────
 
   private formatWorkingMemory(messages: WorkingMemoryEntry[], tokenBudget: number): string {
     const selected: WorkingMemoryEntry[] = []

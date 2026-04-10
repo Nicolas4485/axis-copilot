@@ -12,10 +12,12 @@
     "@axis/inference": "workspace:*",
     "@axis/knowledge-graph": "workspace:*",
     "@axis/types": "workspace:*",
-    "@prisma/client": "^5.14.0"
+    "@prisma/client": "^5.14.0",
+    "ioredis": "^5.3.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ioredis": "^5.0.0",
     "typescript": "^5.4.0"
   },
   "exports": {
