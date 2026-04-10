@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
@@ -9,6 +10,34 @@ import { WebhookHandler } from '@axis/ingestion'
 
 import { prisma as prismaClient } from '../lib/prisma.js'
 const webhookHandler = new WebhookHandler({ prisma: prismaClient })
+
+// ─── OAuth state signing helpers (SEC-2) ────────────────────────
+
+function signState(payload: Record<string, string>): string {
+  const secret = process.env['JWT_SECRET'] ?? ''
+  const data = JSON.stringify(payload)
+  const hmac = createHmac('sha256', secret).update(data).digest('hex')
+  return Buffer.from(JSON.stringify({ data, hmac })).toString('base64url')
+}
+
+function verifyState(state: string): Record<string, string> {
+  let parsed: { data: string; hmac: string }
+  try {
+    parsed = JSON.parse(Buffer.from(state, 'base64url').toString()) as { data: string; hmac: string }
+  } catch {
+    throw new Error('Invalid OAuth state format')
+  }
+
+  const secret = process.env['JWT_SECRET'] ?? ''
+  const expected = createHmac('sha256', secret).update(parsed.data).digest('hex')
+
+  // Constant-time comparison to prevent timing attacks
+  if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(parsed.hmac, 'hex'))) {
+    throw new Error('OAuth state signature invalid — possible CSRF attack')
+  }
+
+  return JSON.parse(parsed.data) as Record<string, string>
+}
 
 export const integrationsRouter = Router()
 
@@ -24,11 +53,11 @@ integrationsRouter.post('/google/connect', authenticate, async (req: Request, re
       return
     }
 
-    // State encodes userId + provider for the callback
-    const state = Buffer.from(JSON.stringify({
-      userId: req.userId,
+    // State is HMAC-signed to prevent OAuth CSRF (SEC-2)
+    const state = signState({
+      userId: req.userId!,
       provider: parsed.data.provider,
-    })).toString('base64url')
+    })
 
     const authUrl = getAuthUrl(state)
     res.json({ authUrl, requestId: req.requestId })
@@ -58,10 +87,21 @@ integrationsRouter.get('/google/callback', async (req: Request, res: Response) =
       return
     }
 
-    // Decode state
-    const stateData = JSON.parse(Buffer.from(state, 'base64url').toString()) as {
-      userId: string
-      provider: string
+    // Verify HMAC signature to prevent OAuth CSRF (SEC-2)
+    let stateData: Record<string, string>
+    try {
+      stateData = verifyState(state)
+    } catch (verifyErr) {
+      const msg = verifyErr instanceof Error ? verifyErr.message : 'State verification failed'
+      res.status(400).json({ error: msg, code: 'OAUTH_STATE_INVALID' })
+      return
+    }
+
+    const userId = stateData['userId']
+    const provider = stateData['provider']
+    if (!userId || !provider) {
+      res.status(400).json({ error: 'OAuth state missing required fields', code: 'OAUTH_STATE_INVALID' })
+      return
     }
 
     // Exchange code for tokens
@@ -71,12 +111,12 @@ integrationsRouter.get('/google/callback', async (req: Request, res: Response) =
     // Store in DB
     await prisma.integration.upsert({
       where: {
-        id: `${stateData.userId}_${stateData.provider}`,
+        id: `${userId}_${provider}`,
       },
       create: {
-        id: `${stateData.userId}_${stateData.provider}`,
-        userId: stateData.userId,
-        provider: stateData.provider as 'GOOGLE_DOCS' | 'GOOGLE_SHEETS' | 'GMAIL' | 'GOOGLE_DRIVE',
+        id: `${userId}_${provider}`,
+        userId,
+        provider: provider as 'GOOGLE_DOCS' | 'GOOGLE_SHEETS' | 'GMAIL' | 'GOOGLE_DRIVE',
         accessToken: encrypted.accessToken,
         refreshToken: encrypted.refreshToken,
         expiresAt: encrypted.expiresAt,
@@ -88,7 +128,7 @@ integrationsRouter.get('/google/callback', async (req: Request, res: Response) =
       },
     })
 
-    res.json({ success: true, provider: stateData.provider, message: 'Google integration connected' })
+    res.json({ success: true, provider, message: 'Google integration connected' })
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'OAuth callback failed', code: 'OAUTH_CALLBACK_ERROR', details: errorMsg })
@@ -104,6 +144,19 @@ integrationsRouter.post('/google/drive-webhook', async (req: Request, res: Respo
     const channelId = req.headers['x-goog-channel-id'] as string ?? ''
     const resourceId = req.headers['x-goog-resource-id'] as string ?? ''
     const resourceState = req.headers['x-goog-resource-state'] as string ?? ''
+    const channelToken = req.headers['x-goog-channel-token'] as string | undefined
+
+    // SEC-3: Verify the channel token matches the one we stored at registration time.
+    // Without this check, anyone who knows the webhook URL can send fake notifications.
+    const expectedToken = process.env['DRIVE_WEBHOOK_SECRET']
+    if (expectedToken) {
+      if (!channelToken || channelToken !== expectedToken) {
+        console.error(`[Webhook] Invalid channel token for channelId=${channelId}`)
+        // Return 200 to avoid Google retrying with the same bad request
+        res.status(200).json({ action: 'ignored', reason: 'invalid_token' })
+        return
+      }
+    }
 
     const result = await webhookHandler.handleNotification(
       {
