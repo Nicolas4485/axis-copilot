@@ -75,16 +75,26 @@ sessionsRouter.post('/', async (req: Request, res: Response) => {
 })
 
 /**
- * GET /api/sessions/:id — Get session with messages
+ * GET /api/sessions/:id — Get session with cursor-paginated messages
+ *
+ * Query params:
+ *   cursor   — message ID to paginate from (exclusive, descending by createdAt)
+ *   limit    — max messages to return (default 50, max 100)
+ *
+ * Response includes `nextCursor` for the next page (null when no more messages).
  */
 sessionsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params['id']
     if (!id) { res.status(400).json({ error: 'Session ID required', code: 'MISSING_ID' }); return }
 
+    const rawLimit = parseInt(req.query['limit'] as string ?? '50', 10)
+    const limit = Math.min(isNaN(rawLimit) || rawLimit < 1 ? 50 : rawLimit, 100)
+    const cursor = req.query['cursor'] as string | undefined
+
     const session = await prisma.session.findFirst({
       where: { id, userId: req.userId! },
-      include: { messages: { orderBy: { createdAt: 'asc' } }, client: true },
+      include: { client: true },
     })
 
     if (!session) {
@@ -92,7 +102,27 @@ sessionsRouter.get('/:id', async (req: Request, res: Response) => {
       return
     }
 
-    res.json({ ...session, requestId: req.requestId })
+    // Fetch limit+1 messages so we can determine if a next page exists
+    const messages = await prisma.message.findMany({
+      where: {
+        sessionId: id,
+        ...(cursor ? { id: { lt: cursor } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+    })
+
+    // Reverse to chronological order for the client
+    const hasMore = messages.length > limit
+    const pageMessages = messages.slice(0, limit).reverse()
+    const nextCursor = hasMore ? (pageMessages[0]?.id ?? null) : null
+
+    res.json({
+      ...session,
+      messages: pageMessages,
+      nextCursor,
+      requestId: req.requestId,
+    })
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'Failed to fetch session', code: 'SESSION_FETCH_ERROR', details: errorMsg, requestId: req.requestId })
