@@ -169,7 +169,8 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
       sessionId,
       req.userId!,
       content,
-      imageBase64
+      imageBase64,
+      session.clientId
     )
 
     // Emit tool events

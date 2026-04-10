@@ -228,7 +228,8 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
       sessionId,
       req.userId!,
       content,
-      imageBase64
+      imageBase64,
+      session.clientId
     )
 
     // Emit tool events

@@ -75,14 +75,16 @@ export class Aria {
     sessionId: string,
     userId: string,
     message: string,
-    imageBase64?: string
+    imageBase64?: string,
+    clientId?: string | null
   ): Promise<AriaResponse> {
     // Step 1: Store user message in working memory
     await this.memory.addToWorkingMemory(sessionId, 'USER', message)
 
-    // Step 2: Build context from memory + RAG
-    const assembled = await this.memory.buildAgentContext(sessionId, userId, null, message)
-    const ragResult = await this.rag.query(message, userId, null)
+    // Step 2: Build context from memory + RAG (scoped to client when available)
+    const resolvedClientId = clientId ?? null
+    const assembled = await this.memory.buildAgentContext(sessionId, userId, resolvedClientId, message)
+    const ragResult = await this.rag.query(message, userId, resolvedClientId)
 
     const systemInstruction = buildAriaSystemInstruction(
       assembled.text,
@@ -91,7 +93,7 @@ export class Aria {
 
     const context: AgentContext = {
       sessionId,
-      clientId: null,
+      clientId: resolvedClientId,
       userId,
       assembledContext: assembled.text,
       ragResult,
