@@ -4,6 +4,7 @@ import cors from 'cors'
 import { initEnv } from './lib/env.js'
 import { injectRequestId, authenticate, generalRateLimit } from './middleware/auth.js'
 import { healthHandler, healthDetailedHandler } from './routes/health.js'
+import { authRouter } from './routes/auth.js'
 import { sessionsRouter } from './routes/sessions.js'
 import { clientsRouter } from './routes/clients.js'
 import { integrationsRouter } from './routes/integrations.js'
@@ -31,6 +32,7 @@ app.use(injectRequestId)
 // ─── Public routes ─────────────────────────────────────────────────────────────
 app.get('/api/health', healthHandler)
 // Detailed health (DB/Redis/Neo4j/Anthropic status) — requires JWT to prevent infra enumeration
+app.use('/api/auth', authRouter)
 
 // OAuth callback is public — no JWT required
 app.use('/api/integrations', integrationsRouter)

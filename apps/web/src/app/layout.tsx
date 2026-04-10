@@ -1,8 +1,7 @@
 import type { Metadata } from 'next'
 import { Playfair_Display, JetBrains_Mono } from 'next/font/google'
 import { Providers } from '@/lib/providers'
-import { Sidebar } from '@/components/sidebar'
-import { WakeWordListener } from '@/components/aria/wake-word'
+import { AppShellClient } from '@/components/app-shell-client'
 import './globals.css'
 
 const playfair = Playfair_Display({
@@ -29,13 +28,9 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${playfair.variable} ${jetbrainsMono.variable}`}>
         <Providers>
-          <WakeWordListener />
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <main className="flex-1 overflow-y-auto">
-              {children}
-            </main>
-          </div>
+          <AppShellClient>
+            {children}
+          </AppShellClient>
         </Providers>
       </body>
     </html>
