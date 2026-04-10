@@ -498,30 +498,43 @@ Chunk: ${chunk.content.slice(0, 500)}`,
       where: { documentId },
     })
 
-    // Insert chunks with embeddings
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i]!
+    // Batch-insert all chunks in a single round trip and get back their IDs
+    const created = await this.prisma.documentChunk.createManyAndReturn({
+      data: chunks.map((chunk) => ({
+        documentId,
+        content: chunk.content,
+        chunkIndex: chunk.chunkIndex,
+        tokens: chunk.tokens,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        metadata: JSON.parse(JSON.stringify(chunk.metadata)),
+      })),
+    })
+
+    // Batch-update embeddings in a single round trip using unnest
+    // Only update rows that have a real (non-zero) embedding
+    const ids: string[] = []
+    const vectors: string[] = []
+
+    for (let i = 0; i < created.length; i++) {
+      const row = created[i]
       const embedding = embeddings[i]
-
-      const created = await this.prisma.documentChunk.create({
-        data: {
-          documentId,
-          content: chunk.content,
-          chunkIndex: chunk.chunkIndex,
-          tokens: chunk.tokens,
-          metadata: JSON.parse(JSON.stringify(chunk.metadata)),
-        },
-      })
-
-      // Store embedding via raw SQL (pgvector column)
-      if (embedding && embedding.some((v) => v !== 0)) {
-        const vectorStr = `[${embedding.join(',')}]`
-        await this.prisma.$executeRawUnsafe(
-          `UPDATE document_chunks SET embedding = $1::vector WHERE id = $2`,
-          vectorStr,
-          created.id
-        )
+      if (row && embedding && embedding.some((v) => v !== 0)) {
+        ids.push(row.id)
+        vectors.push(`[${embedding.join(',')}]`)
       }
+    }
+
+    if (ids.length > 0) {
+      // Use unnest to update all embeddings in one SQL statement
+      // $1::uuid[] and $2::text[] are parameterized — not vulnerable to injection
+      await this.prisma.$executeRawUnsafe(
+        `UPDATE document_chunks
+         SET embedding = v.vec::vector
+         FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS vec) AS v
+         WHERE document_chunks.id = v.id`,
+        ids,
+        vectors
+      )
     }
   }
 
