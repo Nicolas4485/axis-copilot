@@ -258,58 +258,68 @@ export async function syncDriveFolder(
   console.log(`[DriveSync] Found ${allFiles.length} files, ${ingestableFiles.length} ingestable`)
   onProgress?.({ phase: 'downloading', totalFiles: ingestableFiles.length, processedFiles: 0, currentFile: null, errors })
 
-  // Process each file (each runs in a separate Node process to avoid OOM)
-  for (let i = 0; i < ingestableFiles.length; i++) {
-    const { file, path } = ingestableFiles[i]!
-    onProgress?.({ phase: 'ingesting', totalFiles: ingestableFiles.length, processedFiles: i, currentFile: path, errors })
+  // Process files with concurrency = 5 to avoid OOM while keeping throughput high
+  const CONCURRENCY = 5
+  let processedCount = 0
 
-    try {
-      // Check if already indexed with same modification time
-      const existing = await prisma.knowledgeDocument.findFirst({
-        where: { sourceId: file.id, userId },
-      })
+  async function processFile(file: DriveFile, path: string): Promise<void> {
+    onProgress?.({ phase: 'ingesting', totalFiles: ingestableFiles.length, processedFiles: processedCount, currentFile: path, errors })
 
-      if (existing && existing.lastSynced && existing.lastSynced >= new Date(file.modifiedTime)) {
-        console.log(`[DriveSync] Skip (unchanged): ${path}`)
-        skipped++
-        continue
-      }
+    // Check if already indexed with same modification time
+    const existing = await prisma.knowledgeDocument.findFirst({
+      where: { sourceId: file.id, userId },
+    })
 
-      // Download content
-      console.log(`[DriveSync] Downloading: ${path} (${file.mimeType})`)
-      const content = await driveDownloadFile(accessToken, file.id, file.mimeType)
+    if (existing && existing.lastSynced && existing.lastSynced >= new Date(file.modifiedTime)) {
+      console.log(`[DriveSync] Skip (unchanged): ${path}`)
+      skipped++
+      processedCount++
+      return
+    }
 
-      // Run pipeline in a separate process to avoid OOM from tsx
-      try {
-        const result = await runPipelineWorker({
-          fileContent: content.toString('base64'),
-          filename: file.name,
-          mimeType: file.mimeType,
-          userId,
-          options: {
-            ...(clientId ? { clientId } : {}),
-            sourceType: 'GDRIVE',
-            sourceId: file.id,
-            sourcePath: path,
-          },
-        })
+    // Download content
+    console.log(`[DriveSync] Downloading: ${path} (${file.mimeType})`)
+    const content = await driveDownloadFile(accessToken, file.id, file.mimeType)
 
-        if (result.status === 'FAILED') {
-          errors.push(`${path}: Pipeline returned FAILED`)
-          failed++
-        } else {
-          ingested++
-          console.log(`[DriveSync] Ingested via pipeline: ${path} (${result.chunkCount} chunks, ${result.entityCount} entities)`)
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : 'Pipeline failed'
+    const result = await runPipelineWorker({
+      fileContent: content.toString('base64'),
+      filename: file.name,
+      mimeType: file.mimeType,
+      userId,
+      options: {
+        ...(clientId ? { clientId } : {}),
+        sourceType: 'GDRIVE',
+        sourceId: file.id,
+        sourcePath: path,
+      },
+    })
+
+    if (result.status === 'FAILED') {
+      errors.push(`${path}: Pipeline returned FAILED`)
+      failed++
+    } else {
+      ingested++
+      console.log(`[DriveSync] Ingested via pipeline: ${path} (${result.chunkCount} chunks, ${result.entityCount} entities)`)
+    }
+
+    processedCount++
+  }
+
+  // Process in batches of CONCURRENCY using Promise.allSettled so one failure doesn't stop others
+  for (let i = 0; i < ingestableFiles.length; i += CONCURRENCY) {
+    const batch = ingestableFiles.slice(i, i + CONCURRENCY)
+    const results = await Promise.allSettled(
+      batch.map(({ file, path }) => processFile(file, path))
+    )
+
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j]
+      if (result?.status === 'rejected') {
+        const path = batch[j]?.path ?? 'unknown'
+        const errMsg = result.reason instanceof Error ? result.reason.message : 'Unknown error'
         errors.push(`${path}: ${errMsg}`)
         failed++
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Download failed'
-      errors.push(`${path}: ${errMsg}`)
-      failed++
     }
   }
 
