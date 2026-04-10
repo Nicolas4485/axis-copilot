@@ -250,13 +250,18 @@ export const DELEGATION_TOOL_MAP: Record<string, WorkerType> = {
 
 /**
  * Build the full system instruction for Aria.
- * Concatenates personality + dynamic memory context + RAG context.
+ * Concatenates personality + user identity + dynamic memory context + RAG context.
  */
 export function buildAriaSystemInstruction(
   memoryContext: string,
-  ragContext: string | null
+  ragContext: string | null,
+  userName?: string | null
 ): string {
   const parts: string[] = [ARIA_PERSONALITY]
+
+  if (userName) {
+    parts.push(`\n## Current User\nYou are speaking with ${userName}. Address them by name when appropriate.`)
+  }
 
   if (memoryContext) {
     parts.push(`\n## Session Context\n${memoryContext}`)

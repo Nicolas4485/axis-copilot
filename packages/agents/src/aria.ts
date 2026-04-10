@@ -45,6 +45,7 @@ export class Aria {
   private memory: InfiniteMemory
   private toolRegistry: ToolRegistry
   private workers: Record<WorkerType, BaseAgent>
+  private prisma: import('@prisma/client').PrismaClient | null
 
   constructor(options?: {
     engine?: InferenceEngine
@@ -53,6 +54,7 @@ export class Aria {
     prisma?: import('@prisma/client').PrismaClient
   }) {
     this.engine = options?.engine ?? new InferenceEngine()
+    this.prisma = options?.prisma ?? null
     this.rag = options?.rag ?? new RAGEngine({ engine: this.engine, prisma: options?.prisma! })
     this.memory = options?.memory ?? new InfiniteMemory({ engine: this.engine, prisma: options?.prisma })
     this.gemini = new GeminiClient()
@@ -86,9 +88,21 @@ export class Aria {
     const assembled = await this.memory.buildAgentContext(sessionId, userId, resolvedClientId, message)
     const ragResult = await this.rag.query(message, userId, resolvedClientId)
 
+    // Look up user's name so Aria can address them personally
+    let userName: string | null = null
+    if (this.prisma) {
+      try {
+        const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true } })
+        userName = user?.name ?? null
+      } catch {
+        // Non-critical — Aria still works without the name
+      }
+    }
+
     const systemInstruction = buildAriaSystemInstruction(
       assembled.text,
-      ragResult.context || null
+      ragResult.context || null,
+      userName
     )
 
     const context: AgentContext = {
