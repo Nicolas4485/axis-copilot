@@ -60,6 +60,10 @@ export interface RAGConflict {
   valueB: string
   sourceA: string
   sourceB: string
+  /** Value from sourceA document (alias for valueA — semantic clarity) */
+  sourceValue: string
+  /** Contradicting value from sourceB document (alias for valueB — semantic clarity) */
+  conflictingValue: string
 }
 
 /** Citation tracking a source back to its origin */
