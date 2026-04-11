@@ -19,6 +19,22 @@ import { InferenceEngine } from '@axis/inference'
 const GEMINI_WS_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
 
+// Gemini Live sessions have a hard 15-minute limit. We rotate at 14 min so the
+// client can reconnect with fresh context before Gemini closes the session.
+const SESSION_ROTATION_MS = 14 * 60_000
+
+// Silence injection: send 100 ms of 16 kHz PCM silence to Gemini every
+// SILENCE_CHECK_INTERVAL ms when no client audio has arrived for SILENCE_INJECT_AFTER_MS.
+// Gemini Live requires continuous audio activity or it drops the session.
+const SILENCE_INJECT_AFTER_MS = 4_000
+const SILENCE_CHECK_INTERVAL = 3_000
+// 1600 Int16 samples of zero = 100 ms at 16 kHz = 3200 bytes
+const SILENCE_PAYLOAD = JSON.stringify({
+  realtimeInput: {
+    audio: { mimeType: 'audio/pcm;rate=16000', data: Buffer.alloc(3200).toString('base64') },
+  },
+})
+
 // Shared instances — same pattern as aria.ts route
 const engine = new InferenceEngine()
 const aria = new Aria({ engine, prisma })
@@ -123,6 +139,8 @@ export async function handleAriaLiveWs(
   const url = new URL(request.url ?? '/', `http://localhost`)
   const sessionId = url.searchParams.get('sessionId')
   const token = url.searchParams.get('token')
+  // reconnect=true signals that prior conversation context should be loaded
+  const isReconnect = url.searchParams.get('reconnect') === 'true'
 
   if (!sessionId || !token) {
     clientWs.close(4001, 'Missing sessionId or token')
@@ -163,11 +181,42 @@ export async function handleAriaLiveWs(
   // Build Aria's system instruction (memory + RAG + user identity)
   const config = await aria.buildLiveSessionConfig(sessionId, userId, userName)
 
+  // ─── Load recent conversation history ─────────────────────────────────────
+  // Always load the last 10 messages so Gemini has context even on fresh
+  // connections. On reconnect this is essential for continuity.
+  let historyContext = ''
+  try {
+    const recentMessages = await prisma.message.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: { role: true, content: true },
+    })
+    if (recentMessages.length > 0) {
+      const lines = recentMessages
+        .reverse()
+        .map((m) => `${m.role === 'USER' ? 'User' : 'Aria'}: ${m.content.slice(0, 500)}`)
+        .join('\n')
+      const label = isReconnect
+        ? 'Conversation history (reconnected session — continue naturally):'
+        : 'Recent conversation history:'
+      historyContext = `\n\n${label}\n${lines}`
+    }
+  } catch {
+    // Non-critical — session works without history
+  }
+
+  const systemInstructionText = config.systemInstruction + historyContext
+
   // ─── Open server-side Gemini Live connection ──────────────────────────────
 
   const geminiWs = new WebSocket(`${GEMINI_WS_URL}?key=${geminiKey}`)
 
   let geminiReady = false
+  // Timestamp of the last audio frame received from the client. Used by the
+  // silence injector to decide when to send keepalive audio to Gemini.
+  let lastClientAudioMs = Date.now()
+
   // Queue client messages that arrive before Gemini setup completes.
   // Cap at 50 frames (~3 s of audio at 16 kHz / 4096 buffer) to avoid a
   // flood burst when setupComplete arrives after a slow Gemini handshake.
@@ -179,6 +228,11 @@ export async function handleAriaLiveWs(
       clientWs.send(JSON.stringify(payload))
     }
   }
+
+  // ─── Timer handles — declared with let so teardownTimers can reference them
+  //     even though they are assigned after teardownTimers is defined. ─────────
+  let silenceInjectorTimer: ReturnType<typeof setInterval> | null = null
+  let sessionRotationTimer: ReturnType<typeof setTimeout> | null = null
 
   // ─── Server-side Gemini setup timeout ─────────────────────────────────────
   // If Gemini never acks the setup message within 20 s, close both sides so the
@@ -206,6 +260,8 @@ export async function handleAriaLiveWs(
   const teardownTimers = (): void => {
     clearTimeout(geminiSetupTimer)
     clearInterval(keepaliveTimer)
+    if (silenceInjectorTimer) clearInterval(silenceInjectorTimer)
+    if (sessionRotationTimer) clearTimeout(sessionRotationTimer)
   }
 
   // ─── Gemini → client ──────────────────────────────────────────────────────
@@ -222,7 +278,9 @@ export async function handleAriaLiveWs(
           },
         },
         systemInstruction: {
-          parts: [{ text: config.systemInstruction }],
+          // Inject conversation history so Gemini has context from the start,
+          // including after reconnects caused by the session rotation.
+          parts: [{ text: systemInstructionText }],
         },
         tools: GEMINI_LIVE_TOOLS,
       },
@@ -249,6 +307,31 @@ export async function handleAriaLiveWs(
       clearTimeout(geminiSetupTimer)
       geminiReady = true
       sendToClient({ type: 'ready' })
+
+      // ── Silence injector ────────────────────────────────────────────────
+      // Gemini Live drops the session if it receives no audio activity. When
+      // the user's mic is off (or silent), send periodic PCM silence so Gemini
+      // never sees an idle stream.
+      silenceInjectorTimer = setInterval(() => {
+        if (geminiWs.readyState !== WebSocket.OPEN) return
+        if (Date.now() - lastClientAudioMs > SILENCE_INJECT_AFTER_MS) {
+          geminiWs.send(SILENCE_PAYLOAD)
+        }
+      }, SILENCE_CHECK_INTERVAL)
+
+      // ── Session rotation ─────────────────────────────────────────────────
+      // Gemini Live sessions hard-expire at 15 min. Warn the client at 14 min
+      // so it can reconnect gracefully (with history) before Gemini cuts us off.
+      sessionRotationTimer = setTimeout(() => {
+        console.log('[AriaLiveWS] 14-min limit approaching — triggering session rotation')
+        sendToClient({ type: 'session_rotate' })
+        // Give the client 5 s to acknowledge and reconnect before we close.
+        setTimeout(() => {
+          teardownTimers()
+          if (geminiWs.readyState === WebSocket.OPEN) geminiWs.close(1000, 'Session rotation')
+          if (clientWs.readyState === WebSocket.OPEN) clientWs.close(4010, 'Session rotation')
+        }, 5_000)
+      }, SESSION_ROTATION_MS)
 
       // Flush any audio frames that arrived while we were setting up
       for (const frame of pendingFrames) {
@@ -332,6 +415,32 @@ export async function handleAriaLiveWs(
       }
     }
 
+    // ── Persist voice transcript ──────────────────────────────────────────
+    // Save user speech transcripts and Aria text responses so they survive
+    // reconnects and appear in the session history on the dashboard.
+    const serverContent = data['serverContent'] as Record<string, unknown> | undefined
+    if (serverContent) {
+      const inputTranscript = serverContent['inputTranscript'] as string | undefined
+      if (inputTranscript?.trim()) {
+        void prisma.message.create({
+          data: { sessionId, role: 'USER', content: inputTranscript.trim(), mode: 'voice', metadata: {} },
+        }).catch(() => { /* non-critical */ })
+      }
+
+      const modelTurn = serverContent['modelTurn'] as Record<string, unknown> | undefined
+      const parts = modelTurn?.['parts'] as Array<Record<string, unknown>> | undefined
+      if (parts) {
+        const textParts = parts
+          .filter((p) => typeof p['text'] === 'string' && (p['text'] as string).trim())
+          .map((p) => p['text'] as string)
+        if (textParts.length > 0) {
+          void prisma.message.create({
+            data: { sessionId, role: 'ASSISTANT', content: textParts.join(''), mode: 'voice', metadata: {} },
+          }).catch(() => { /* non-critical */ })
+        }
+      }
+    }
+
     // ── All other Gemini messages → relay to client ───────────────────────
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(buf)
@@ -350,9 +459,10 @@ export async function handleAriaLiveWs(
     }
   })
 
-  geminiWs.on('close', (code) => {
+  geminiWs.on('close', (code, reason) => {
     teardownTimers()
-    console.log(`[AriaLiveWS] Gemini closed (${code})`)
+    const reasonStr = reason?.toString() ?? ''
+    console.log(`[AriaLiveWS] Gemini closed — code=${code} reason="${reasonStr}"`)
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.close(1011, 'Gemini connection closed')
     }
@@ -375,6 +485,10 @@ export async function handleAriaLiveWs(
         if (parsed['type'] === 'heartbeat') return
       } catch { /* not JSON — fall through */ }
     }
+
+    // Track the last time we received client audio so the silence injector
+    // knows when to kick in.
+    lastClientAudioMs = Date.now()
 
     if (!geminiReady) {
       // Gemini is still setting up — queue audio frames (drop oldest if full)

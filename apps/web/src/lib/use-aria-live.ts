@@ -91,6 +91,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
   // ── Refs ───────────────────────────────────────────────────────────────────
   const wsRef = useRef<WebSocket | null>(null)
+  const isReconnectRef = useRef(false)
   const playbackCtxRef = useRef<AudioContext | null>(null)
   const micCtxRef = useRef<AudioContext | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
@@ -290,7 +291,10 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
       if (!token) throw new Error('Not authenticated')
 
-      const url = `${WS_BASE}/api/aria/live?sessionId=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(token)}`
+      // Include reconnect flag so the backend loads conversation history
+      const reconnectParam = isReconnectRef.current ? '&reconnect=true' : ''
+      isReconnectRef.current = false // consumed — reset before the socket opens
+      const url = `${WS_BASE}/api/aria/live?sessionId=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(token)}${reconnectParam}`
       const ws = new WebSocket(url)
       wsRef.current = ws
 
@@ -359,6 +363,15 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             prev.map((t) => t.tool === tool && t.status === 'running' ? { ...t, status: 'completed' } : t)
           )
           if (stateRef.current === 'delegating') setState('thinking')
+          return
+        }
+
+        if (msgType === 'session_rotate') {
+          // Server is rotating the Gemini session before the 15-min hard limit.
+          // Close with code 1000 (clean), mark as reconnect, then reconnect
+          // immediately so the new session loads conversation history.
+          isReconnectRef.current = true
+          ws.close(1000)
           return
         }
 
@@ -441,12 +454,25 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       ws.onclose = (event) => {
         setIsConnected(false)
         if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null }
-        if (event.code === 1000) {
+
+        // 4010 = server-initiated session rotation (14-min limit).
+        // Reconnect immediately with reconnect=true so the backend loads history.
+        if (event.code === 4010) {
+          isReconnectRef.current = true
+          setState('connecting')
+          cleanup()
+          void connect()
+          return
+        }
+
+        if (event.code === 1000 && !isReconnectRef.current) {
           setState('idle')
           cleanup()
           return
         }
-        // Exponential back-off reconnect
+
+        // Unexpected close — exponential back-off reconnect
+        isReconnectRef.current = true
         const delay = reconnectDelayRef.current
         reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY)
         setState('connecting')
