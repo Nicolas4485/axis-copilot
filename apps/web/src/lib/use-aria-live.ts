@@ -422,7 +422,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               nextPlayTimeRef.current = 0
             }
 
-            if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
+            if (
+              stateRef.current === 'speaking' ||
+              stateRef.current === 'thinking' ||
+              stateRef.current === 'delegating'
+            ) {
               setState('listening')
             }
           }
