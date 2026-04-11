@@ -49,7 +49,10 @@ interface UseAriaLiveReturn {
   toolActivities: ToolActivity[]
 }
 
-const AUDIO_RATE = 24000
+const MIC_RATE = 16000            // Gemini Live input expects 16 kHz PCM
+const PLAYBACK_RATE = 24000       // Gemini Live output is 24 kHz PCM
+const JITTER_BUFFER_S = 0.12      // 120 ms pre-buffer before starting playback
+const BACKPRESSURE_LIMIT = 65536  // 64 KB — skip mic frame if WS buffer exceeds this
 const SETUP_TIMEOUT = 15_000      // ms to wait for backend "ready" event
 const MAX_RECONNECT_DELAY = 60_000
 const SCREEN_FRAME_INTERVAL = 2000 // ms between screen-share frames
@@ -103,7 +106,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const playAudio = useCallback(async (base64Data: string) => {
     if (!base64Data || base64Data.length < 10) return
     try {
-      const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: AUDIO_RATE })
+      const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: PLAYBACK_RATE })
       if (!playbackCtxRef.current) playbackCtxRef.current = ctx
 
       const binaryString = atob(base64Data)
@@ -120,7 +123,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         float32[i] = (int16[i] ?? 0) / 32768
       }
 
-      const audioBuffer = ctx.createBuffer(1, float32.length, AUDIO_RATE)
+      const audioBuffer = ctx.createBuffer(1, float32.length, PLAYBACK_RATE)
       audioBuffer.getChannelData(0).set(float32)
 
       const source = ctx.createBufferSource()
@@ -128,7 +131,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       source.connect(ctx.destination)
 
       const now = ctx.currentTime
-      const startTime = Math.max(now, nextPlayTimeRef.current)
+      // If audio is still queued (within 50 ms of future), chain from it.
+      // Otherwise re-prime with a jitter buffer so chunks have time to arrive.
+      const startTime = nextPlayTimeRef.current > now - 0.05
+        ? nextPlayTimeRef.current
+        : now + JITTER_BUFFER_S
       source.start(startTime)
       nextPlayTimeRef.current = startTime + audioBuffer.duration
     } catch (err) {
@@ -359,7 +366,13 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           if (serverContent['turnComplete']) {
             // Clear completed tool badges after each turn
             setToolActivities((prev) => prev.filter((t) => t.status === 'running'))
-            nextPlayTimeRef.current = 0
+            // Only reset the playback head if audio has already finished playing.
+            // If we reset while chunks are still queued the jitter-buffer logic in
+            // playAudio handles the "fresh start" case via the > now - 0.05 guard.
+            const ctx = playbackCtxRef.current
+            if (!ctx || nextPlayTimeRef.current <= ctx.currentTime) {
+              nextPlayTimeRef.current = 0
+            }
 
             if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
               setState('listening')
@@ -422,7 +435,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: AUDIO_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        // Request 16 kHz to match Gemini Live input format. The AudioContext
+        // below will resample if the hardware doesn't support this natively.
+        audio: { sampleRate: MIC_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
       micStreamRef.current = stream
       stream.getAudioTracks()[0]?.addEventListener('ended', () => {
@@ -430,7 +445,9 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         micStreamRef.current = null
       })
 
-      const ctx = new AudioContext({ sampleRate: AUDIO_RATE })
+      // Creating the AudioContext at MIC_RATE ensures the browser resamples
+      // hardware audio (often 44.1/48 kHz) down to 16 kHz before we read it.
+      const ctx = new AudioContext({ sampleRate: MIC_RATE })
       micCtxRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
       const processor = ctx.createScriptProcessor(4096, 1, 1)
@@ -438,6 +455,10 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
       processor.onaudioprocess = (e) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+        // Backpressure: drop frame if the WS send buffer is building up.
+        // This prevents audio pile-up when the network slows down.
+        if (wsRef.current.bufferedAmount > BACKPRESSURE_LIMIT) return
+
         const inputData = e.inputBuffer.getChannelData(0)
 
         // VAD — interrupt playback when user speaks while Aria is talking
@@ -460,7 +481,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]!)
 
         wsRef.current.send(JSON.stringify({
-          realtimeInput: { audio: { mimeType: `audio/pcm;rate=${AUDIO_RATE}`, data: btoa(binary) } },
+          realtimeInput: { audio: { mimeType: `audio/pcm;rate=${MIC_RATE}`, data: btoa(binary) } },
         }))
       }
 

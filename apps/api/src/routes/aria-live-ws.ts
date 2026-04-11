@@ -10,7 +10,7 @@
 
 import type { IncomingMessage } from 'http'
 import WebSocket from 'ws'
-import { verify } from 'jsonwebtoken'
+import jwt from 'jsonwebtoken'
 import { prisma } from '../lib/prisma.js'
 import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
@@ -98,7 +98,7 @@ const GEMINI_LIVE_TOOLS = [
 
 function extractUserId(token: string): string | null {
   try {
-    const decoded = verify(token, env().JWT_SECRET) as { userId: string }
+    const decoded = jwt.verify(token, env().JWT_SECRET) as { userId: string }
     return typeof decoded.userId === 'string' ? decoded.userId : null
   } catch {
     return null
@@ -168,7 +168,10 @@ export async function handleAriaLiveWs(
   const geminiWs = new WebSocket(`${GEMINI_WS_URL}?key=${geminiKey}`)
 
   let geminiReady = false
-  // Queue client messages that arrive before Gemini setup completes
+  // Queue client messages that arrive before Gemini setup completes.
+  // Cap at 50 frames (~3 s of audio at 16 kHz / 4096 buffer) to avoid a
+  // flood burst when setupComplete arrives after a slow Gemini handshake.
+  const MAX_PENDING_FRAMES = 50
   const pendingFrames: Buffer[] = []
 
   const sendToClient = (payload: Record<string, unknown>): void => {
@@ -326,7 +329,8 @@ export async function handleAriaLiveWs(
     const frame = toBuffer(rawData as Buffer | ArrayBuffer | Buffer[])
 
     if (!geminiReady) {
-      // Gemini is still setting up — queue audio frames
+      // Gemini is still setting up — queue audio frames (drop oldest if full)
+      if (pendingFrames.length >= MAX_PENDING_FRAMES) pendingFrames.shift()
       pendingFrames.push(frame)
       return
     }
