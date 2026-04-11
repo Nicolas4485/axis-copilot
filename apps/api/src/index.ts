@@ -18,6 +18,7 @@ import { handleAriaLiveWs } from './routes/aria-live-ws.js'
 import { syncRouter } from './routes/sync.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
+import { syncClientsFromDrive } from './scripts/sync-clients-from-drive.js'
 
 // ─── Validate environment variables before anything else ──────────────────────
 // Throws with a clear message if required vars are missing.
@@ -92,6 +93,23 @@ server.on('upgrade', (request, socket, head) => {
 // ─── Start server ──────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(JSON.stringify({ event: 'server_start', port: PORT, env: config.NODE_ENV }))
+
+  // Non-blocking: sync client folders from Google Drive for all users who have
+  // a GOOGLE_DRIVE integration. Removes seed data, discovers real clients.
+  void (async () => {
+    try {
+      const driveUsers = await prisma.integration.findMany({
+        where: { provider: 'GOOGLE_DRIVE' },
+        select: { userId: true },
+        distinct: ['userId'],
+      })
+      for (const { userId } of driveUsers) {
+        await syncClientsFromDrive(userId)
+      }
+    } catch (err) {
+      console.warn('[Startup] Client sync failed:', err instanceof Error ? err.message : err)
+    }
+  })()
 })
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────

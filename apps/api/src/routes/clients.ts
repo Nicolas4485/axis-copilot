@@ -2,6 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { createClientSchema, updateClientSchema, createStakeholderSchema } from '../lib/schemas.js'
+import { syncClientsFromDrive } from '../scripts/sync-clients-from-drive.js'
 
 export const clientsRouter = Router()
 
@@ -246,5 +247,25 @@ clientsRouter.get('/:id/orgchart', async (req: Request, res: Response) => {
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'Failed to build org chart', code: 'ORGCHART_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
+ * POST /api/clients/sync-from-drive — Manually trigger Drive client discovery
+ *
+ * Scans the Work-Projects folder in Google Drive and upserts client records.
+ * Also removes legacy seed clients (Acme Corp, etc.).
+ */
+clientsRouter.post('/sync-from-drive', async (req: Request, res: Response) => {
+  try {
+    await syncClientsFromDrive(req.userId!)
+    const clients = await prisma.client.findMany({
+      where: { userId: req.userId! },
+      orderBy: { createdAt: 'desc' },
+    })
+    res.json({ success: true, clients, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Drive sync failed', code: 'DRIVE_SYNC_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })

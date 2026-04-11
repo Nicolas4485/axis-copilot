@@ -21,8 +21,8 @@ export const authRouter = Router()
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-const DEV_USER_EMAIL = 'dev@axis.local'
-const DEV_USER_NAME = 'Dev User'
+const DEV_USER_EMAIL = 'sakrnicolas@gmail.com'
+const DEV_USER_NAME = 'Nicolas Sakr'
 const JWT_EXPIRY = '7d'
 
 function issueJwt(userId: string, email: string): string {

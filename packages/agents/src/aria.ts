@@ -80,7 +80,8 @@ export class Aria {
     userId: string,
     message: string,
     imageBase64?: string,
-    clientId?: string | null
+    clientId?: string | null,
+    priorMessages?: Array<{ role: 'user' | 'assistant'; content: string }>
   ): Promise<AriaResponse> {
     // Step 1: Store user message in working memory
     await this.memory.addToWorkingMemory(sessionId, 'USER', message)
@@ -120,8 +121,9 @@ export class Aria {
     const toolsUsed: string[] = []
     const delegations: Array<{ workerType: WorkerType; query: string; success: boolean }> = []
 
-    // Build messages for Gemini
+    // Build messages for Gemini — prepend prior conversation history if provided
     const messages: InferenceMessage[] = [
+      ...(priorMessages ?? []).map((m) => ({ role: m.role, content: m.content })),
       { role: 'user', content: imageBase64 ? `[Image attached]\n\n${message}` : message },
     ]
 

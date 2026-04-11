@@ -193,6 +193,29 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
     res.write(`data: ${JSON.stringify({ ...(data as Record<string, unknown>), type })}\n\n`)
   }
 
+  // Load recent conversation history so Aria has context when resuming a session.
+  // Capped at 20 messages, oldest first, content truncated to 500 chars each to
+  // avoid ballooning the context window on very long sessions.
+  const priorMessages: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  try {
+    const recentMessages = await prisma.message.findMany({
+      where: { sessionId, role: { in: ['USER', 'ASSISTANT'] } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: { role: true, content: true },
+    })
+    priorMessages.push(
+      ...recentMessages
+        .reverse()
+        .map((m) => ({
+          role: m.role === 'USER' ? 'user' as const : 'assistant' as const,
+          content: m.content.slice(0, 500),
+        }))
+    )
+  } catch {
+    // Non-critical — Aria still works without history, just starts fresh
+  }
+
   try {
     // Run orchestrator
     const agentResponse = await aria.handleTextMessage(
@@ -200,7 +223,8 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
       req.userId!,
       content,
       imageBase64,
-      session.clientId
+      session.clientId,
+      priorMessages
     )
 
     // Emit tool events

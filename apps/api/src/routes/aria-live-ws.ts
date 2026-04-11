@@ -15,6 +15,7 @@ import { prisma } from '../lib/prisma.js'
 import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
+import { google as goog } from '@axis/tools'
 
 const GEMINI_WS_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
@@ -74,7 +75,7 @@ const GEMINI_LIVE_TOOLS = [
       {
         name: 'delegate_to_agent',
         description:
-          'Delegate deep analysis to a specialist agent. Sean=product, Kevin=process, Mel=competitive, Anjie=stakeholder. Use when the user asks for expert analysis beyond your immediate knowledge.',
+          'Delegate deep analysis to a specialist agent. Sean=product, Kevin=process, Mel=competitive, Anjie=stakeholder. Always include the actual data (email content, document text, client context) in the query — not just a description of it.',
         parameters: {
           type: 'object',
           properties: {
@@ -83,7 +84,7 @@ const GEMINI_LIVE_TOOLS = [
               enum: ['product', 'process', 'competitive', 'stakeholder'],
               description: 'Which specialist agent to use',
             },
-            query: { type: 'string', description: 'The analysis request' },
+            query: { type: 'string', description: 'The full analysis request including all relevant data and context' },
           },
           required: ['workerType', 'query'],
         },
@@ -106,9 +107,152 @@ const GEMINI_LIVE_TOOLS = [
           required: ['title', 'content'],
         },
       },
+      {
+        name: 'search_gmail',
+        description:
+          'Search Gmail for emails. Use proactively whenever the user mentions emails, asks about conversations, or references communications from specific people or companies. Do not ask the user — just search.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Gmail search query — supports operators: from:, to:, subject:, after:YYYY/MM/DD, before:, label:, has:attachment',
+            },
+            maxResults: { type: 'number', description: 'Max emails to return (default 5, max 20)' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'read_email',
+        description:
+          'Read the full content of a specific email by message ID. Call search_gmail first to get message IDs, then call this to get the full email body.',
+        parameters: {
+          type: 'object',
+          properties: {
+            messageId: { type: 'string', description: 'Gmail message ID from search_gmail results' },
+          },
+          required: ['messageId'],
+        },
+      },
+      {
+        name: 'search_google_drive',
+        description:
+          'Search Google Drive for documents, spreadsheets, presentations, and files. Use when looking for reports, proposals, contracts, or any document related to the conversation. Do not ask the user — just search.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'Search query — use Drive search syntax e.g. "fullText contains \'budget\'" or "name contains \'proposal\'" or just keywords',
+            },
+            maxResults: { type: 'number', description: 'Max files to return (default 5)' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'read_drive_document',
+        description:
+          'Read the content of a specific Google Drive document by file ID. Call search_google_drive first to find the file ID, then call this to get its content.',
+        parameters: {
+          type: 'object',
+          properties: {
+            fileId: { type: 'string', description: 'Google Drive file ID from search_google_drive results' },
+          },
+          required: ['fileId'],
+        },
+      },
+      {
+        name: 'web_search',
+        description:
+          'Search the web for current information on companies, markets, competitors, news, or any topic not covered by the knowledge base.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Web search query' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'book_meeting',
+        description:
+          'Schedule a meeting in Google Calendar. Use when the user asks to book, schedule, or set up a meeting.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Meeting title' },
+            dateTime: {
+              type: 'string',
+              description: 'Start date and time in ISO 8601 format (e.g. 2026-04-15T14:00:00)',
+            },
+            attendees: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Email addresses of attendees (optional)',
+            },
+            durationMinutes: { type: 'number', description: 'Duration in minutes (default 60)' },
+          },
+          required: ['title', 'dateTime'],
+        },
+      },
+      {
+        name: 'create_task',
+        description:
+          'Create an action item or task for follow-up. Use when the user asks to note something, create a to-do, or when an action item surfaces during conversation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Task title' },
+            description: { type: 'string', description: 'Additional context or details' },
+            priority: {
+              type: 'string',
+              enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+              description: 'Task priority (default MEDIUM)',
+            },
+            dueDate: { type: 'string', description: 'Due date in ISO 8601 format (optional)' },
+          },
+          required: ['title'],
+        },
+      },
     ],
   },
 ]
+
+// ─── Google OAuth token helper ────────────────────────────────────────────────
+// Looks up the user's stored encrypted tokens and returns a valid access token,
+// refreshing if expired and persisting the refreshed tokens back to the DB.
+
+async function getGoogleAccessToken(
+  userId: string,
+  provider: 'GMAIL' | 'GOOGLE_DRIVE'
+): Promise<string> {
+  const integration = await prisma.integration.findFirst({
+    where: { userId, provider },
+    select: { id: true, accessToken: true, refreshToken: true, expiresAt: true },
+  })
+  if (!integration) {
+    throw new Error(`No ${provider} integration — user has not connected their Google account`)
+  }
+  return goog.getValidToken(
+    {
+      accessToken: integration.accessToken,
+      refreshToken: integration.refreshToken ?? '',
+      expiresAt: integration.expiresAt ?? new Date(0),
+    },
+    async (updated) => {
+      await prisma.integration.update({
+        where: { id: integration.id },
+        data: {
+          accessToken: updated.accessToken,
+          refreshToken: updated.refreshToken,
+          expiresAt: updated.expiresAt,
+        },
+      })
+    }
+  )
+}
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
 
@@ -390,6 +534,81 @@ export async function handleAriaLiveWs(
                         agent: workerType,
                         summary: agentResult.content.slice(0, 1000),
                       }
+                    })()
+                  : name === 'search_gmail'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GMAIL')
+                      const messages = await goog.searchMessages(
+                        token,
+                        args['query'] as string,
+                        (args['maxResults'] as number | undefined) ?? 5
+                      )
+                      return { messages }
+                    })()
+                  : name === 'read_email'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GMAIL')
+                      return await goog.readMessage(token, args['messageId'] as string)
+                    })()
+                  : name === 'search_google_drive'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
+                      return await goog.listFiles(token, {
+                        query: args['query'] as string,
+                        pageSize: (args['maxResults'] as number | undefined) ?? 5,
+                      })
+                    })()
+                  : name === 'read_drive_document'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
+                      const buf = await goog.downloadFile(token, args['fileId'] as string, 'text/plain')
+                      return { content: buf.toString('utf8').slice(0, 10_000) }
+                    })()
+                  : name === 'book_meeting'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
+                      const startTime = new Date(args['dateTime'] as string)
+                      const durationMs = ((args['durationMinutes'] as number | undefined) ?? 60) * 60_000
+                      const endTime = new Date(startTime.getTime() + durationMs)
+                      const attendeeEmails = (args['attendees'] as string[] | undefined) ?? []
+                      const calResponse = await fetch(
+                        'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+                        {
+                          method: 'POST',
+                          headers: {
+                            Authorization: `Bearer ${token}`,
+                            'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify({
+                            summary: args['title'] as string,
+                            start: { dateTime: startTime.toISOString(), timeZone: 'UTC' },
+                            end: { dateTime: endTime.toISOString(), timeZone: 'UTC' },
+                            attendees: attendeeEmails.map((email) => ({ email })),
+                          }),
+                        }
+                      )
+                      if (!calResponse.ok) {
+                        throw new Error(`Calendar API error: ${calResponse.status} ${await calResponse.text()}`)
+                      }
+                      const event = await calResponse.json() as { id: string; htmlLink: string; summary: string }
+                      return { eventId: event.id, link: event.htmlLink, title: event.summary }
+                    })()
+                  : name === 'create_task'
+                  ? (async () => {
+                      const title = args['title'] as string
+                      const description = (args['description'] as string | undefined) ?? ''
+                      const priority = (args['priority'] as string | undefined) ?? 'MEDIUM'
+                      const dueDate = (args['dueDate'] as string | undefined) ?? null
+                      await prisma.message.create({
+                        data: {
+                          sessionId,
+                          role: 'SYSTEM',
+                          content: `Task: ${title}${description ? `\n${description}` : ''}`,
+                          mode: 'task',
+                          metadata: { priority, dueDate, createdByAria: true },
+                        },
+                      })
+                      return { status: 'created', title, priority }
                     })()
                   : (async () => {
                       const toolContext = {
