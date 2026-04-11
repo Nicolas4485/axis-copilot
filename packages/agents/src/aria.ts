@@ -17,6 +17,7 @@ import {
   ARIA_TOOL_DECLARATIONS,
   DELEGATION_TOOL_MAP,
   buildAriaSystemInstruction,
+  buildAriaVoiceSystemInstruction,
   type WorkerType,
 } from './aria-prompt.js'
 import type { InferenceMessage, ToolDefinition } from '@axis/inference'
@@ -287,19 +288,25 @@ export class Aria {
   }
 
   /**
-   * Build configuration for a Gemini Live session (voice/video mode).
-   * Called by the API endpoint that returns a session token to the frontend.
+   * Build configuration for a Gemini Live (voice/video) session.
+   * Uses the voice-specific system instruction which includes conciseness rules,
+   * screen share awareness, and memory/RAG context.
+   * Called server-side by the WebSocket proxy — never returns the API key.
    */
   async buildLiveSessionConfig(
     sessionId: string,
     userId: string,
+    userName?: string | null,
+    clientId?: string | null,
   ): Promise<LiveSessionConfig> {
-    const assembled = await this.memory.buildAgentContext(sessionId, userId, null, '')
-    const ragResult = await this.rag.query('session context', userId, null)
+    const resolvedClientId = clientId ?? null
+    const assembled = await this.memory.buildAgentContext(sessionId, userId, resolvedClientId, '')
+    const ragResult = await this.rag.query('session context', userId, resolvedClientId)
 
-    const systemInstruction = buildAriaSystemInstruction(
+    const systemInstruction = buildAriaVoiceSystemInstruction(
       assembled.text,
-      ragResult.context || null
+      ragResult.context || null,
+      userName
     )
 
     return {

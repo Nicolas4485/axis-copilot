@@ -249,7 +249,7 @@ export const DELEGATION_TOOL_MAP: Record<string, WorkerType> = {
 }
 
 /**
- * Build the full system instruction for Aria.
+ * Build the full system instruction for Aria (text mode).
  * Concatenates personality + user identity + dynamic memory context + RAG context.
  */
 export function buildAriaSystemInstruction(
@@ -269,6 +269,46 @@ export function buildAriaSystemInstruction(
 
   if (ragContext) {
     parts.push(`\n## Knowledge Context\n${ragContext}`)
+  }
+
+  return parts.join('\n')
+}
+
+/** Voice-specific behavioural rules added on top of the base instruction */
+const VOICE_MODE_ADDENDUM = `
+
+## Voice Mode Rules
+You are in a live voice session — treat this like a real conversation, not a chat window.
+
+- **Be concise.** Keep each response to 2–3 sentences unless the user asks for detail. Long answers are hard to listen to.
+- **No markdown.** Never use bullet points, headers, code blocks, or asterisks in your spoken responses — they sound robotic.
+- **Natural language only.** Spell out numbers and abbreviations when speaking (e.g. "thirty percent" not "30%", "United States" not "US").
+- **Acknowledge before answering.** When you use a tool or delegate, say what you're doing: "Let me check the knowledge base on that" or "I'm sending this to Sean — give me a moment."
+- **Screen share awareness.** If the user shares their screen, you will receive image frames. Reference what you can see naturally: "Looking at your screen, I can see..." — don't mention the technical mechanism.
+- **Interrupt gracefully.** If the user speaks while you are mid-response, stop and listen. Never talk over them.
+- **Delegate for depth.** Use delegate_to_agent for anything requiring more than 60 seconds of analysis. Tell the user the agent is working and you will share results when ready.`
+
+/**
+ * Build the full system instruction for a Gemini Live (voice) session.
+ * Includes base Aria personality + voice rules + user identity + memory + RAG.
+ */
+export function buildAriaVoiceSystemInstruction(
+  memoryContext: string,
+  ragContext: string | null,
+  userName?: string | null
+): string {
+  const parts: string[] = [ARIA_PERSONALITY, VOICE_MODE_ADDENDUM]
+
+  if (userName) {
+    parts.push(`\n## Current User\nYou are in a live voice session with ${userName}. Use their name occasionally — it makes the conversation feel personal.`)
+  }
+
+  if (memoryContext) {
+    parts.push(`\n## Session Memory\n${memoryContext}`)
+  }
+
+  if (ragContext) {
+    parts.push(`\n## Client Knowledge\n${ragContext}`)
   }
 
   return parts.join('\n')
