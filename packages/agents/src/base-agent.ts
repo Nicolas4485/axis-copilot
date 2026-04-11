@@ -19,6 +19,9 @@ import type {
 
 const MAX_ITERATIONS = 10
 const MAX_RETRIEVAL_CYCLES = 2
+// Hard wall-clock limit for the entire agentic loop. Prevents infinite hangs
+// when the Claude API or a tool stalls mid-loop.
+const AGENT_LOOP_TIMEOUT_MS = 25_000
 
 export class BaseAgent {
   protected config: AgentConfig
@@ -99,9 +102,15 @@ export class BaseAgent {
 
     let finalTextContent = ''
     let reasoning = ''
+    const loopStartMs = Date.now()
 
     // Agentic loop
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      if (Date.now() - loopStartMs > AGENT_LOOP_TIMEOUT_MS) {
+        console.warn(`[Agent] Loop timeout after ${AGENT_LOOP_TIMEOUT_MS / 1000} s at iteration ${iteration} — returning partial result`)
+        finalTextContent = finalTextContent || 'Analysis timed out — the request is taking too long. Please try again.'
+        break
+      }
       const response = await this.engine.route('agent_response', {
         systemPromptKey: this.config.systemPromptKey,
         messages,

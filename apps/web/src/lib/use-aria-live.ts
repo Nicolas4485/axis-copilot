@@ -92,6 +92,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   // ── Refs ───────────────────────────────────────────────────────────────────
   const wsRef = useRef<WebSocket | null>(null)
   const isReconnectRef = useRef(false)
+  const toolTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const playbackCtxRef = useRef<AudioContext | null>(null)
   const micCtxRef = useRef<AudioContext | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
@@ -188,6 +189,8 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     if (setupTimeoutRef.current) { clearTimeout(setupTimeoutRef.current); setupTimeoutRef.current = null }
     if (screenFrameTimerRef.current) { clearInterval(screenFrameTimerRef.current); screenFrameTimerRef.current = null }
     if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null }
+    toolTimersRef.current.forEach((t) => clearTimeout(t))
+    toolTimersRef.current.clear()
     stopMicCapture()
     cameraStreamRef.current?.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null
     screenStreamRef.current?.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null
@@ -354,11 +357,27 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           })
           // Delegation tools shift state to 'delegating'
           if (tool === 'delegate_to_agent') setState('delegating')
+
+          // Frontend safety net: mark tool as error if no result within 35 s
+          const existingTimer = toolTimersRef.current.get(tool)
+          if (existingTimer) clearTimeout(existingTimer)
+          const timer = setTimeout(() => {
+            toolTimersRef.current.delete(tool)
+            setToolActivities((prev) =>
+              prev.map((t) => t.tool === tool && t.status === 'running' ? { ...t, status: 'error' } : t)
+            )
+            if (stateRef.current === 'delegating') setState('listening')
+            onError?.(`"${tool}" timed out — no response from server after 35 s`)
+          }, 35_000)
+          toolTimersRef.current.set(tool, timer)
           return
         }
 
         if (msgType === 'tool_result') {
           const tool = data['tool'] as string
+          // Clear the frontend timeout for this tool
+          const timer = toolTimersRef.current.get(tool)
+          if (timer) { clearTimeout(timer); toolTimersRef.current.delete(tool) }
           setToolActivities((prev) =>
             prev.map((t) => t.tool === tool && t.status === 'running' ? { ...t, status: 'completed' } : t)
           )

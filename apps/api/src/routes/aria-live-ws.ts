@@ -344,74 +344,88 @@ export async function handleAriaLiveWs(
     }
 
     // ── Tool / function calls from Gemini ─────────────────────────────────
+    // Tools run asynchronously (fire-and-forget) so this message handler
+    // returns immediately. Audio frames from Gemini keep flowing to the
+    // client while tools execute; results are sent back when they complete.
     const toolCall = data['toolCall'] as Record<string, unknown> | undefined
     if (toolCall) {
       const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
       if (functionCalls && functionCalls.length > 0) {
-        const functionResponses: Array<Record<string, unknown>> = []
+        const TOOL_TIMEOUT_MS = 30_000 // hard cap per tool call
 
-        for (const fc of functionCalls) {
-          const name = fc['name'] as string
-          const callId = fc['id'] as string
-          const args = (fc['args'] ?? {}) as Record<string, unknown>
+        void (async () => {
+          const functionResponses: Array<Record<string, unknown>> = []
 
-          // Notify the client that a tool is running
-          sendToClient({ type: 'tool_start', tool: name })
+          for (const fc of functionCalls) {
+            const name = fc['name'] as string
+            const callId = fc['id'] as string
+            const args = (fc['args'] ?? {}) as Record<string, unknown>
 
-          let result: unknown
-          try {
-            if (name === 'delegate_to_agent') {
-              // Custom delegation path — calls a specialist agent
-              const workerType = args['workerType'] as 'product' | 'process' | 'competitive' | 'stakeholder'
-              const query = args['query'] as string
+            sendToClient({ type: 'tool_start', tool: name })
+            console.log(`[AriaLiveWS] Tool start: ${name}`)
 
-              const delegationContext = {
-                sessionId,
-                clientId: session.clientId,
-                userId,
-                assembledContext: '',
-                ragResult: null as never,
-                stakeholders: [],
-                clientRecord: null,
-              }
+            const timeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`Tool "${name}" timed out after 30 s`)), TOOL_TIMEOUT_MS)
+            )
 
-              const agentResult = await aria.delegate(workerType, query, delegationContext)
-              result = {
-                status: 'completed',
-                agent: workerType,
-                summary: agentResult.content.slice(0, 1000),
-              }
-            } else {
-              // Direct tool execution via ToolRegistry
-              const toolContext = {
-                sessionId,
-                userId,
-                clientId: session.clientId ?? '',
-                requestId: `live-${callId}`,
-              }
-              const toolResult = await aria.executeTool(name, args, toolContext)
-              result = toolResult.success ? toolResult.data : { error: toolResult.error }
+            let result: unknown
+            try {
+              const exec: Promise<unknown> =
+                name === 'delegate_to_agent'
+                  ? (async () => {
+                      const workerType = args['workerType'] as 'product' | 'process' | 'competitive' | 'stakeholder'
+                      const query = args['query'] as string
+                      const delegationContext = {
+                        sessionId,
+                        clientId: session.clientId,
+                        userId,
+                        assembledContext: '',
+                        ragResult: null as never,
+                        stakeholders: [],
+                        clientRecord: null,
+                      }
+                      const agentResult = await aria.delegate(workerType, query, delegationContext)
+                      return {
+                        status: 'completed',
+                        agent: workerType,
+                        summary: agentResult.content.slice(0, 1000),
+                      }
+                    })()
+                  : (async () => {
+                      const toolContext = {
+                        sessionId,
+                        userId,
+                        clientId: session.clientId ?? '',
+                        requestId: `live-${callId}`,
+                      }
+                      const toolResult = await aria.executeTool(name, args, toolContext)
+                      return toolResult.success ? toolResult.data : { error: toolResult.error }
+                    })()
+
+              result = await Promise.race([exec, timeout])
+              console.log(`[AriaLiveWS] Tool complete: ${name}`)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : 'Tool execution failed'
+              console.error(`[AriaLiveWS] Tool error (${name}):`, msg)
+              result = { error: msg }
             }
-          } catch (err) {
-            result = { error: err instanceof Error ? err.message : 'Tool execution failed' }
+
+            sendToClient({ type: 'tool_result', tool: name, result })
+            functionResponses.push({
+              id: callId,
+              name,
+              response: { output: JSON.stringify(result) },
+            })
           }
 
-          sendToClient({ type: 'tool_result', tool: name, result })
+          if (geminiWs.readyState === WebSocket.OPEN) {
+            geminiWs.send(JSON.stringify({ toolResponse: { functionResponses } }))
+          }
+        })().catch((err: unknown) => {
+          console.error('[AriaLiveWS] Unhandled tool execution error:', err instanceof Error ? err.message : err)
+        })
 
-          functionResponses.push({
-            id: callId,
-            name,
-            response: { output: JSON.stringify(result) },
-          })
-        }
-
-        // Return all results to Gemini in one message
-        if (geminiWs.readyState === WebSocket.OPEN) {
-          geminiWs.send(JSON.stringify({
-            toolResponse: { functionResponses },
-          }))
-        }
-        return
+        return // handler returns immediately — audio keeps flowing
       }
     }
 

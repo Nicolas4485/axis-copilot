@@ -150,6 +150,7 @@ export class ClaudeClient {
     }
 
     try {
+      console.log(`[Claude] → ${model} (task=${options?.task ?? 'unknown'}, msgs=${messages.length}, tools=${allTools.length})`)
       const response = await this.client.messages.create({
         model: modelId,
         max_tokens: maxTokens,
@@ -159,6 +160,7 @@ export class ClaudeClient {
       })
 
       const latencyMs = Date.now() - startTime
+      console.log(`[Claude] ← ${model} ${latencyMs}ms stop=${response.stop_reason} out=${response.usage.output_tokens}tok`)
 
       // Parse response content blocks
       const content: InferenceContentBlock[] = []
