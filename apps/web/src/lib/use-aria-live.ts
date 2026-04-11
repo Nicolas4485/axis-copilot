@@ -9,6 +9,10 @@
 // Gemini now handles both voice I/O AND reasoning/tools in live mode.
 // The backend proxy executes tool calls server-side and notifies us via
 // {type:"tool_start"} / {type:"tool_result"} events on the same WebSocket.
+//
+// Audio capture fix: uses AudioWorkletNode instead of the deprecated
+// ScriptProcessorNode. The worklet runs on a dedicated audio thread so React
+// re-renders can never delay or drop microphone frames.
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 
@@ -56,6 +60,13 @@ const BACKPRESSURE_LIMIT = 65536  // 64 KB — skip mic frame if WS buffer excee
 const SETUP_TIMEOUT = 15_000      // ms to wait for backend "ready" event
 const MAX_RECONNECT_DELAY = 60_000
 const SCREEN_FRAME_INTERVAL = 2000 // ms between screen-share frames
+// RMS amplitude threshold for voice-activity detection. Uses RMS (not peak)
+// to avoid stopping Aria on brief ambient noise transients.
+const VAD_RMS_THRESHOLD = 0.02
+
+// Heartbeat interval: send a no-op message to keep the proxy WebSocket alive
+// through proxies/firewalls that drop idle connections after 60 s.
+const HEARTBEAT_INTERVAL_MS = 25_000
 
 // Derive WebSocket URL from the API base (http→ws, https→wss)
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
@@ -85,28 +96,24 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
   const micStreamRef = useRef<MediaStream | null>(null)
   const cameraStreamRef = useRef<MediaStream | null>(null)
   const screenStreamRef = useRef<MediaStream | null>(null)
+  // Worklet node (primary) and legacy ScriptProcessor fallback
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const processorRef = useRef<ScriptProcessorNode | null>(null)
   const nextPlayTimeRef = useRef(0)
   const reconnectDelayRef = useRef(2000)
   const setupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const screenFrameTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const screenCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const screenVideoRef = useRef<HTMLVideoElement | null>(null)
 
   // ── Audio playback ─────────────────────────────────────────────────────────
 
-  // Track active source nodes so we can stop them individually without closing
-  // the AudioContext (closing then recreating causes a new suspended context,
-  // which is the primary cause of audio cut-outs after a VAD interrupt).
-  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([])
-
   const stopAudioPlayback = useCallback(() => {
-    // Stop all currently-scheduled sources without destroying the context.
-    // The context stays alive and resumed so the next response plays immediately.
-    for (const src of activeSourcesRef.current) {
-      try { src.stop() } catch { /* already ended — safe to ignore */ }
+    if (playbackCtxRef.current) {
+      void playbackCtxRef.current.close()
+      playbackCtxRef.current = null
     }
-    activeSourcesRef.current = []
     nextPlayTimeRef.current = 0
   }, [])
 
@@ -116,10 +123,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: PLAYBACK_RATE })
       if (!playbackCtxRef.current) playbackCtxRef.current = ctx
 
-      // Browsers auto-suspend AudioContext until a user gesture.
-      // Resume every time we schedule audio so cut-outs after an interrupt
-      // (or on first play) are healed without creating a new context.
-      if (ctx.state === 'suspended') await ctx.resume()
+      // Resume if the browser suspended the context (tab backgrounded, idle policy).
+      // Without this, source.start() silently schedules audio that never plays.
+      if (ctx.state === 'suspended') {
+        await ctx.resume()
+      }
 
       const binaryString = atob(base64Data)
       const bytes = new Uint8Array(binaryString.length)
@@ -142,12 +150,6 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       source.buffer = audioBuffer
       source.connect(ctx.destination)
 
-      // Track so we can stop on VAD interrupt
-      activeSourcesRef.current.push(source)
-      source.onended = () => {
-        activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source)
-      }
-
       const now = ctx.currentTime
       // If audio is still queued (within 50 ms of future), chain from it.
       // Otherwise re-prime with a jitter buffer so chunks have time to arrive.
@@ -161,23 +163,39 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     }
   }, [])
 
+  // ── Mic capture teardown ───────────────────────────────────────────────────
+
+  const stopMicCapture = useCallback(() => {
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.onmessage = null
+      workletNodeRef.current.disconnect()
+      workletNodeRef.current = null
+    }
+    if (processorRef.current) {
+      processorRef.current.onaudioprocess = null
+      processorRef.current.disconnect()
+      processorRef.current = null
+    }
+    micStreamRef.current?.getTracks().forEach((t) => t.stop())
+    micStreamRef.current = null
+    if (micCtxRef.current) { void micCtxRef.current.close(); micCtxRef.current = null }
+  }, [])
+
   // ── Cleanup ────────────────────────────────────────────────────────────────
 
   const cleanup = useCallback(() => {
     if (setupTimeoutRef.current) { clearTimeout(setupTimeoutRef.current); setupTimeoutRef.current = null }
     if (screenFrameTimerRef.current) { clearInterval(screenFrameTimerRef.current); screenFrameTimerRef.current = null }
-    micStreamRef.current?.getTracks().forEach((t) => t.stop()); micStreamRef.current = null
+    if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null }
+    stopMicCapture()
     cameraStreamRef.current?.getTracks().forEach((t) => t.stop()); cameraStreamRef.current = null
     screenStreamRef.current?.getTracks().forEach((t) => t.stop()); screenStreamRef.current = null
-    if (processorRef.current) { processorRef.current.onaudioprocess = null; processorRef.current.disconnect(); processorRef.current = null }
-    if (micCtxRef.current) { void micCtxRef.current.close(); micCtxRef.current = null }
     if (playbackCtxRef.current) { void playbackCtxRef.current.close(); playbackCtxRef.current = null }
-    activeSourcesRef.current = []
     screenCanvasRef.current = null
     screenVideoRef.current = null
     nextPlayTimeRef.current = 0
     setIsMicOn(false); setIsCameraOn(false); setIsScreenSharing(false)
-  }, [])
+  }, [stopMicCapture])
 
   useEffect(() => {
     return () => {
@@ -304,6 +322,17 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           setIsConnected(true)
           setState('listening')
           reconnectDelayRef.current = 2000
+
+          // Client-side heartbeat: keeps the proxy WS alive through proxies that
+          // time out idle connections. The server recognises this type and
+          // swallows it — it never reaches Gemini.
+          if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current)
+          heartbeatTimerRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'heartbeat' }))
+            }
+          }, HEARTBEAT_INTERVAL_MS)
+
           return
         }
 
@@ -393,11 +422,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               nextPlayTimeRef.current = 0
             }
 
-            if (
-              stateRef.current === 'speaking' ||
-              stateRef.current === 'thinking' ||
-              stateRef.current === 'delegating'
-            ) {
+            if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
               setState('listening')
             }
           }
@@ -411,6 +436,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
       ws.onclose = (event) => {
         setIsConnected(false)
+        if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null }
         if (event.code === 1000) {
           setState('idle')
           cleanup()
@@ -438,20 +464,19 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     setState('idle')
   }, [cleanup, setState])
 
-  // ── Mic — 16 kHz PCM streamed to backend ──────────────────────────────────
+  // ── Mic — AudioWorklet (primary) with ScriptProcessor fallback ────────────
+  //
+  // AudioWorkletNode runs on a dedicated audio thread. React re-renders and
+  // heavy main-thread work cannot delay or drop audio callbacks.
+  //
+  // Fallback to ScriptProcessorNode when AudioWorklet is unavailable
+  // (very old browsers, restricted iframe contexts).
 
   const toggleMic = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
 
     if (isMicOn) {
-      micStreamRef.current?.getTracks().forEach((t) => t.stop())
-      micStreamRef.current = null
-      if (processorRef.current) {
-        processorRef.current.onaudioprocess = null
-        processorRef.current.disconnect()
-        processorRef.current = null
-      }
-      if (micCtxRef.current) { void micCtxRef.current.close(); micCtxRef.current = null }
+      stopMicCapture()
       setIsMicOn(false)
       return
     }
@@ -465,40 +490,27 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       micStreamRef.current = stream
       stream.getAudioTracks()[0]?.addEventListener('ended', () => {
         setIsMicOn(false)
-        micStreamRef.current = null
+        stopMicCapture()
       })
 
-      // Creating the AudioContext at MIC_RATE ensures the browser resamples
-      // hardware audio (often 44.1/48 kHz) down to 16 kHz before we read it.
+      // AudioContext at MIC_RATE ensures the browser resamples hardware audio
+      // (often 44.1/48 kHz) down to 16 kHz before we read it.
       const ctx = new AudioContext({ sampleRate: MIC_RATE })
       micCtxRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
-      const processor = ctx.createScriptProcessor(4096, 1, 1)
-      processorRef.current = processor
 
-      processor.onaudioprocess = (e) => {
+      // ── Shared per-frame send logic ──────────────────────────────────────
+      const sendAudioPcm = (pcm: Int16Array, rms: number): void => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
         // Backpressure: drop frame if the WS send buffer is building up.
-        // This prevents audio pile-up when the network slows down.
         if (wsRef.current.bufferedAmount > BACKPRESSURE_LIMIT) return
 
-        const inputData = e.inputBuffer.getChannelData(0)
-
-        // VAD — interrupt playback when user speaks while Aria is talking
-        if (stateRef.current === 'speaking') {
-          let maxAmplitude = 0
-          for (let i = 0; i < inputData.length; i++) {
-            const a = Math.abs(inputData[i] ?? 0)
-            if (a > maxAmplitude) maxAmplitude = a
-          }
-          if (maxAmplitude > 0.05) stopAudioPlayback()
+        // VAD — interrupt playback when user speaks while Aria is talking.
+        // Uses RMS (root mean square) to avoid false triggers from brief noise transients.
+        if (stateRef.current === 'speaking' && rms > VAD_RMS_THRESHOLD) {
+          stopAudioPlayback()
         }
 
-        // Convert Float32 → Int16 → base64 PCM
-        const pcm = new Int16Array(inputData.length)
-        for (let i = 0; i < inputData.length; i++) {
-          pcm[i] = Math.max(-32768, Math.min(32767, Math.floor((inputData[i] ?? 0) * 32768)))
-        }
         const bytes = new Uint8Array(pcm.buffer)
         let binary = ''
         for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]!)
@@ -508,14 +520,59 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
         }))
       }
 
-      source.connect(processor)
-      processor.connect(ctx.destination)
+      // ── Try AudioWorklet first ───────────────────────────────────────────
+      let useWorklet = false
+      try {
+        await ctx.audioWorklet.addModule('/audio-capture-worklet.js')
+        const workletNode = new AudioWorkletNode(ctx, 'audio-capture')
+        workletNodeRef.current = workletNode
+
+        workletNode.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; rms: number }>) => {
+          sendAudioPcm(new Int16Array(e.data.pcm), e.data.rms)
+        }
+
+        source.connect(workletNode)
+        // Do NOT connect workletNode to ctx.destination — we don't want mic echo
+        useWorklet = true
+      } catch (workletErr) {
+        console.warn('[AriaLive] AudioWorklet unavailable, falling back to ScriptProcessor:', workletErr)
+      }
+
+      // ── ScriptProcessor fallback ─────────────────────────────────────────
+      if (!useWorklet) {
+        const processor = ctx.createScriptProcessor(4096, 1, 1)
+        processorRef.current = processor
+
+        processor.onaudioprocess = (e) => {
+          const inputData = e.inputBuffer.getChannelData(0)
+
+          // Compute RMS for VAD
+          let sumSq = 0
+          for (let i = 0; i < inputData.length; i++) {
+            const s = inputData[i] ?? 0
+            sumSq += s * s
+          }
+          const rms = Math.sqrt(sumSq / inputData.length)
+
+          // Convert Float32 → Int16
+          const pcm = new Int16Array(inputData.length)
+          for (let i = 0; i < inputData.length; i++) {
+            pcm[i] = Math.max(-32768, Math.min(32767, Math.floor((inputData[i] ?? 0) * 32768)))
+          }
+
+          sendAudioPcm(pcm, rms)
+        }
+
+        source.connect(processor)
+        processor.connect(ctx.destination)
+      }
+
       setIsMicOn(true)
       setState('listening')
     } catch (err) {
       onError?.(`Microphone access denied: ${err instanceof Error ? err.message : 'Unknown error'}`)
     }
-  }, [isMicOn, onError, setState, stopAudioPlayback])
+  }, [isMicOn, onError, setState, stopAudioPlayback, stopMicCapture])
 
   // ── Camera ────────────────────────────────────────────────────────────────
 

@@ -193,14 +193,14 @@ export async function handleAriaLiveWs(
     }
   }, GEMINI_SETUP_TIMEOUT)
 
-  // ─── Keepalive — prevent Gemini from dropping idle connections ────────────
-  // Gemini Live closes idle WebSocket sessions. A WebSocket-level ping every
-  // 30 s keeps the TCP/TLS session alive during silent pauses.
-  const KEEPALIVE_INTERVAL = 30_000
+  // ─── Keepalive — prevent proxy/firewall from dropping idle connections ────
+  // Most reverse-proxies (nginx, ALB) close WebSocket connections idle for
+  // > 60 s. We ping both legs every 20 s so silent pauses don't kill the
+  // session. The browser's native WebSocket automatically responds with pong.
+  const KEEPALIVE_INTERVAL = 20_000
   const keepaliveTimer = setInterval(() => {
-    if (geminiWs.readyState === WebSocket.OPEN) {
-      geminiWs.ping()
-    }
+    if (geminiWs.readyState === WebSocket.OPEN) geminiWs.ping()
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.ping()
   }, KEEPALIVE_INTERVAL)
 
   const teardownTimers = (): void => {
@@ -230,6 +230,7 @@ export async function handleAriaLiveWs(
   })
 
   geminiWs.on('message', async (rawData) => {
+    try {
     const buf = toBuffer(rawData as Buffer | ArrayBuffer | Buffer[])
     let data: Record<string, unknown>
 
@@ -335,6 +336,9 @@ export async function handleAriaLiveWs(
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(buf)
     }
+    } catch (err) {
+      console.error('[AriaLiveWS] Unhandled error in Gemini message handler:', err instanceof Error ? err.message : err)
+    }
   })
 
   geminiWs.on('error', (err) => {
@@ -356,8 +360,21 @@ export async function handleAriaLiveWs(
 
   // ─── Client → Gemini ──────────────────────────────────────────────────────
 
+  // Maximum bytes in Gemini's WS send buffer before we drop audio frames.
+  // Prevents unbounded queue build-up when the Gemini connection is slow.
+  const GEMINI_BACKPRESSURE_LIMIT = 131_072 // 128 KB
+
   clientWs.on('message', (rawData) => {
     const frame = toBuffer(rawData as Buffer | ArrayBuffer | Buffer[])
+
+    // Swallow client heartbeat pings — they must not reach Gemini.
+    // Small messages only (< 50 bytes) so we avoid touching audio frames.
+    if (frame.length < 50) {
+      try {
+        const parsed = JSON.parse(frame.toString('utf8')) as Record<string, unknown>
+        if (parsed['type'] === 'heartbeat') return
+      } catch { /* not JSON — fall through */ }
+    }
 
     if (!geminiReady) {
       // Gemini is still setting up — queue audio frames (drop oldest if full)
@@ -367,6 +384,11 @@ export async function handleAriaLiveWs(
     }
 
     if (geminiWs.readyState === WebSocket.OPEN) {
+      // Backpressure: drop frames when Gemini's send buffer is building up.
+      // This prevents audio pile-up during slow Gemini responses.
+      if (geminiWs.bufferedAmount > GEMINI_BACKPRESSURE_LIMIT) {
+        return
+      }
       geminiWs.send(frame)
     }
   })
