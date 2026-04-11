@@ -180,6 +180,34 @@ export async function handleAriaLiveWs(
     }
   }
 
+  // ─── Server-side Gemini setup timeout ─────────────────────────────────────
+  // If Gemini never acks the setup message within 20 s, close both sides so the
+  // client can attempt an exponential-backoff reconnect rather than hanging.
+  const GEMINI_SETUP_TIMEOUT = 20_000
+  const geminiSetupTimer = setTimeout(() => {
+    if (!geminiReady) {
+      console.error('[AriaLiveWS] Gemini setup timeout — closing')
+      sendToClient({ type: 'error', message: 'Gemini setup timeout' })
+      geminiWs.close(1011, 'Setup timeout')
+      if (clientWs.readyState === WebSocket.OPEN) clientWs.close(4503, 'Gemini setup timeout')
+    }
+  }, GEMINI_SETUP_TIMEOUT)
+
+  // ─── Keepalive — prevent Gemini from dropping idle connections ────────────
+  // Gemini Live closes idle WebSocket sessions. A WebSocket-level ping every
+  // 30 s keeps the TCP/TLS session alive during silent pauses.
+  const KEEPALIVE_INTERVAL = 30_000
+  const keepaliveTimer = setInterval(() => {
+    if (geminiWs.readyState === WebSocket.OPEN) {
+      geminiWs.ping()
+    }
+  }, KEEPALIVE_INTERVAL)
+
+  const teardownTimers = (): void => {
+    clearTimeout(geminiSetupTimer)
+    clearInterval(keepaliveTimer)
+  }
+
   // ─── Gemini → client ──────────────────────────────────────────────────────
 
   geminiWs.on('open', () => {
@@ -217,6 +245,7 @@ export async function handleAriaLiveWs(
 
     // ── Setup acknowledgement ─────────────────────────────────────────────
     if ('setupComplete' in data) {
+      clearTimeout(geminiSetupTimer)
       geminiReady = true
       sendToClient({ type: 'ready' })
 
@@ -309,6 +338,7 @@ export async function handleAriaLiveWs(
   })
 
   geminiWs.on('error', (err) => {
+    teardownTimers()
     console.error('[AriaLiveWS] Gemini error:', err.message)
     sendToClient({ type: 'error', message: 'Gemini connection error' })
     if (clientWs.readyState === WebSocket.OPEN) {
@@ -317,6 +347,7 @@ export async function handleAriaLiveWs(
   })
 
   geminiWs.on('close', (code) => {
+    teardownTimers()
     console.log(`[AriaLiveWS] Gemini closed (${code})`)
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.close(1011, 'Gemini connection closed')
@@ -341,12 +372,14 @@ export async function handleAriaLiveWs(
   })
 
   clientWs.on('close', () => {
+    teardownTimers()
     if (geminiWs.readyState === WebSocket.OPEN || geminiWs.readyState === WebSocket.CONNECTING) {
       geminiWs.close(1000)
     }
   })
 
   clientWs.on('error', (err) => {
+    teardownTimers()
     console.error('[AriaLiveWS] Client error:', err.message)
     if (geminiWs.readyState === WebSocket.OPEN) {
       geminiWs.close(1011)

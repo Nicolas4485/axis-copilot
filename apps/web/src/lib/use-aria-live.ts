@@ -95,11 +95,18 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
 
   // ── Audio playback ─────────────────────────────────────────────────────────
 
+  // Track active source nodes so we can stop them individually without closing
+  // the AudioContext (closing then recreating causes a new suspended context,
+  // which is the primary cause of audio cut-outs after a VAD interrupt).
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([])
+
   const stopAudioPlayback = useCallback(() => {
-    if (playbackCtxRef.current) {
-      void playbackCtxRef.current.close()
-      playbackCtxRef.current = null
+    // Stop all currently-scheduled sources without destroying the context.
+    // The context stays alive and resumed so the next response plays immediately.
+    for (const src of activeSourcesRef.current) {
+      try { src.stop() } catch { /* already ended — safe to ignore */ }
     }
+    activeSourcesRef.current = []
     nextPlayTimeRef.current = 0
   }, [])
 
@@ -108,6 +115,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     try {
       const ctx = playbackCtxRef.current ?? new AudioContext({ sampleRate: PLAYBACK_RATE })
       if (!playbackCtxRef.current) playbackCtxRef.current = ctx
+
+      // Browsers auto-suspend AudioContext until a user gesture.
+      // Resume every time we schedule audio so cut-outs after an interrupt
+      // (or on first play) are healed without creating a new context.
+      if (ctx.state === 'suspended') await ctx.resume()
 
       const binaryString = atob(base64Data)
       const bytes = new Uint8Array(binaryString.length)
@@ -129,6 +141,12 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       const source = ctx.createBufferSource()
       source.buffer = audioBuffer
       source.connect(ctx.destination)
+
+      // Track so we can stop on VAD interrupt
+      activeSourcesRef.current.push(source)
+      source.onended = () => {
+        activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source)
+      }
 
       const now = ctx.currentTime
       // If audio is still queued (within 50 ms of future), chain from it.
@@ -154,6 +172,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     if (processorRef.current) { processorRef.current.onaudioprocess = null; processorRef.current.disconnect(); processorRef.current = null }
     if (micCtxRef.current) { void micCtxRef.current.close(); micCtxRef.current = null }
     if (playbackCtxRef.current) { void playbackCtxRef.current.close(); playbackCtxRef.current = null }
+    activeSourcesRef.current = []
     screenCanvasRef.current = null
     screenVideoRef.current = null
     nextPlayTimeRef.current = 0
@@ -374,7 +393,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
               nextPlayTimeRef.current = 0
             }
 
-            if (stateRef.current === 'speaking' || stateRef.current === 'thinking') {
+            if (
+              stateRef.current === 'speaking' ||
+              stateRef.current === 'thinking' ||
+              stateRef.current === 'delegating'
+            ) {
               setState('listening')
             }
           }
@@ -415,7 +438,7 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     setState('idle')
   }, [cleanup, setState])
 
-  // ── Mic — 24 kHz PCM streamed to backend ──────────────────────────────────
+  // ── Mic — 16 kHz PCM streamed to backend ──────────────────────────────────
 
   const toggleMic = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
