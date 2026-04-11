@@ -6,7 +6,6 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import { rateLimit } from 'express-rate-limit'
 import { prisma } from '../lib/prisma.js'
-import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
 import { messagesRateLimit } from '../middleware/auth.js'
@@ -16,11 +15,9 @@ const aria = new Aria({ engine, prisma })
 
 export const ariaRouter = Router()
 
-// SEC-1 KNOWN ISSUE: /session-token returns the raw Gemini API key to the browser.
-// This is not production-safe — any authenticated user can extract the key from devtools
-// and make unlimited Gemini API calls at your expense.
-// TODO: Replace with Gemini ephemeral token endpoint or a server-side WebSocket proxy.
-// Rate limit reduces blast radius in the meantime.
+// /session-token is now used only for memory-refresh metadata (system instruction, tools).
+// The Gemini API key is NO LONGER returned — SEC-1 resolved.
+// Live audio/video is proxied through /api/aria/live (WebSocket) which holds the key server-side.
 const sessionTokenRateLimit = rateLimit({
   windowMs: 60 * 1000,
   max: 5, // 5 requests per minute per user — Live sessions rarely need more
@@ -76,19 +73,10 @@ ariaRouter.post('/session-token', sessionTokenRateLimit, async (req: Request, re
       return
     }
 
-    // Build live session config with memory context
+    // Build live session config with memory context (no API key returned — SEC-1 fix)
     const config = await aria.buildLiveSessionConfig(sessionId, req.userId!)
 
-    const geminiKey = env().GEMINI_API_KEY
-    if (!geminiKey) {
-      res.status(503).json({ error: 'Gemini not configured', code: 'GEMINI_NOT_CONFIGURED', requestId: req.requestId })
-      return
-    }
-
-    // Return the API key for the frontend to connect directly to Gemini Live
-    // In production, use ephemeral tokens instead
     res.json({
-      apiKey: geminiKey,
       systemInstruction: config.systemInstruction,
       tools: config.tools,
       model: config.model,
@@ -411,7 +399,7 @@ ariaRouter.post('/memory-refresh', async (req: Request, res: Response) => {
       return
     }
 
-    const config = await aria.buildLiveSessionConfig(sessionId, req.userId!)
+    const config = await aria.buildLiveSessionConfig(sessionId, req.userId!, null, session.clientId)
 
     res.json({
       systemInstruction: config.systemInstruction,

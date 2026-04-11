@@ -1,6 +1,8 @@
+import { createServer } from 'http'
 import express from 'express'
 import helmet from 'helmet'
 import cors from 'cors'
+import { WebSocketServer } from 'ws'
 import { initEnv } from './lib/env.js'
 import { injectRequestId, authenticate, generalRateLimit } from './middleware/auth.js'
 import { healthHandler, healthDetailedHandler } from './routes/health.js'
@@ -12,6 +14,7 @@ import { knowledgeRouter } from './routes/knowledge.js'
 import { exportsRouter } from './routes/exports.js'
 import { costRouter } from './routes/cost.js'
 import { ariaRouter } from './routes/aria.js'
+import { handleAriaLiveWs } from './routes/aria-live-ws.js'
 import { syncRouter } from './routes/sync.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
@@ -64,8 +67,30 @@ process.on('uncaughtException', (err) => {
   process.exit(1)
 })
 
+// ─── HTTP server (required for WebSocket upgrade handling) ────────────────────
+const server = createServer(app)
+
+// ─── WebSocket server for Gemini Live proxy ───────────────────────────────────
+// Listens on /api/aria/live — auth is done inside handleAriaLiveWs via JWT
+// in the query string (no browser-side Gemini API key needed).
+const wss = new WebSocketServer({ noServer: true })
+
+server.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url ?? '/', `http://localhost`).pathname
+  if (pathname === '/api/aria/live') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleAriaLiveWs(ws, request).catch((err: unknown) => {
+        console.error('[AriaLiveWS] Unhandled error:', err)
+        ws.close(1011, 'Internal error')
+      })
+    })
+  } else {
+    socket.destroy()
+  }
+})
+
 // ─── Start server ──────────────────────────────────────────────────────────────
-const server = app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(JSON.stringify({ event: 'server_start', port: PORT, env: config.NODE_ENV }))
 })
 
