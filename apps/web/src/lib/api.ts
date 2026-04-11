@@ -369,8 +369,9 @@ export function streamMessage(
 
 // ─── Aria (Conversational Orchestrator) ─────────────────────────
 
+// SEC-1 resolved: apiKey is no longer returned by the server.
+// Live sessions connect through the backend WebSocket proxy at /api/aria/live.
 export interface AriaSessionToken {
-  apiKey: string
   systemInstruction: string
   tools: Array<{
     name: string
