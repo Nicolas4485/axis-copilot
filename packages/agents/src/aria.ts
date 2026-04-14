@@ -203,19 +203,18 @@ export class Aria {
           // Run delegation in background
           this.delegate(workerType, delegationQuery, context, delegationImage)
             .then((result) => {
-              console.log(`[Aria] ${workerName} completed: ${result.content.length} chars`)
-              // Store result as a system message in the session for later retrieval
+              // Store full structured output in episodic memory for later retrieval
               if (this.memory) {
                 void this.memory.storeEpisodicMemory(
                   userId,
                   context.clientId,
-                  `${workerName} (${workerType}) analysis result: ${result.content.slice(0, 2000)}`,
-                  [workerType, workerName, sessionId]
+                  `${workerName} (${workerType}) analysis:\n${result.content.slice(0, 3000)}`,
+                  [workerType, workerName, sessionId, 'specialist_output']
                 )
               }
             })
             .catch((err) => {
-              console.error(`[Aria] ${workerName} failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+              console.error(`[Specialist:${workerName}] ERROR — ${err instanceof Error ? err.message : 'Unknown'}`)
             })
 
           delegations.push({ workerType, query: delegationQuery, success: true })
@@ -314,7 +313,7 @@ export class Aria {
     return {
       systemInstruction,
       tools: ARIA_TOOL_DECLARATIONS,
-      model: 'gemini-2.0-flash-live',
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
     }
   }
 
@@ -332,6 +331,7 @@ export class Aria {
   /**
    * Delegate to a worker agent.
    * Builds the full agent context and runs the specialist.
+   * Emits structured debug logs for observability.
    */
   async delegate(
     workerType: WorkerType,
@@ -339,12 +339,37 @@ export class Aria {
     context: AgentContext,
     imageBase64?: string
   ): Promise<AgentResponse> {
+    const workerNames: Record<WorkerType, string> = {
+      product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie',
+    }
+    const workerName = workerNames[workerType]
     const worker = this.workers[workerType]
     const enrichedQuery = imageBase64 ? `[Image attached]\n\n${query}` : query
+    const delegationStart = Date.now()
 
-    console.log(`[Aria] Delegating to ${workerType} worker: ${query.slice(0, 100)}`)
+    console.log(`[Specialist:${workerName}] START — query="${query.slice(0, 120)}" sessionId=${context.sessionId}`)
+
     const result = await worker.run(enrichedQuery, context)
-    console.log(`[Aria] ${workerType} worker completed: ${result.content.length} chars, ${result.toolsUsed.length} tools used`)
+
+    const durationMs = Date.now() - delegationStart
+
+    // Structured specialist invocation log — visible in API server stdout
+    console.log(`[Specialist:${workerName}] COMPLETE — ${JSON.stringify({
+      workerType,
+      durationMs,
+      toolsUsed:       result.toolsUsed,
+      toolCount:       result.toolsUsed.length,
+      outputChars:     result.content.length,
+      citationCount:   result.citations.length,
+      conflictCount:   result.conflictsFound.length,
+      trace:           result.trace ? {
+        trivialQuery:    result.trace.trivialQuery,
+        planItems:       result.trace.queryPlan.length,
+        retrievalCycles: result.trace.retrievalCycles,
+        totalMs:         result.trace.totalDurationMs,
+      } : null,
+      outputPreview:   result.content.slice(0, 300),
+    })}`)
 
     return result
   }
