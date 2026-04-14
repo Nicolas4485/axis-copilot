@@ -191,11 +191,11 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
   // ─── Delegation tools (Aria routes to worker agents) ────────
   {
     name: 'delegate_product_analysis',
-    description: 'Send to Sean (Product). Use for product critique, feature prioritization, UX/UI review, prototyping, or competitive product comparison. Sean can read code from GitHub and create alternatives.',
+    description: `Send to Sean (Product) when the intent is about WHAT to build or WHY to build it. Triggers: "what should we build", "is this feature worth it", "JTBD", "job to be done", "user problem", "prioritise the roadmap", "product strategy", "UX review", "wireframe feedback", "feature comparison", "RICE score", "opportunity solution tree". Sean outputs Problem → Users → Hypothesis → Solution Sketch → Success Metrics → Risks. Always validates the problem before proposing solutions. Can read GitHub code and create alternatives.`,
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The specific product question or analysis request' },
+        query: { type: 'string', description: 'The specific product question — include all relevant context: client name, document extracts, stated user problems, prior conversations' },
         clientId: { type: 'string', description: 'Client ID if known' },
         imageBase64: { type: 'string', description: 'Base64 image for screenshot/wireframe analysis' },
       },
@@ -204,11 +204,11 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
   },
   {
     name: 'delegate_process_analysis',
-    description: 'Send to Kevin (Process). Use for process mapping, automation scoring, workflow optimization, and human-in-the-loop checkpoint design. Kevin can read configs and create automation scripts.',
+    description: `Send to Kevin (Process) when the intent is about HOW work gets done or how to make it more efficient. Triggers: "how should this process work", "automate", "workflow", "bottleneck", "who owns this", "RACI", "SOP", "step by step", "current state vs future state", "reporting process", "handoff", "approval flow", "reduce friction". Kevin outputs Current State → Pain Points → Root Cause → Future State → RACI → Implementation Steps → Highest-Leverage Interventions. Always flags effort/impact scores.`,
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The process question or analysis request' },
+        query: { type: 'string', description: 'The process question — include all relevant context: current workflow description, team size, tools used, known pain points' },
         clientId: { type: 'string', description: 'Client ID if known' },
       },
       required: ['query'],
@@ -216,11 +216,11 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
   },
   {
     name: 'delegate_competitive_analysis',
-    description: 'Send to Mel (Competitive). Use for competitor research, market positioning, comparison matrices, and positioning strategy. Mel always searches the web for current data.',
+    description: `Send to Mel (Competitive) when the intent is about the market, competitors, or positioning. Triggers: "who are our competitors", "competitive landscape", "how do we compare", "what are [Competitor] doing", "market positioning", "battlecard", "differentiation", "threat assessment", "pricing vs competitors", "win/loss". Mel always searches the web first for current data and produces battlecard-format output. Every claim is cited with a date. Sources older than 6 months are flagged as stale.`,
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The competitive analysis request' },
+        query: { type: 'string', description: 'The competitive analysis request — include client name, their market, known competitors if any' },
         clientId: { type: 'string', description: 'Client ID if known' },
       },
       required: ['query'],
@@ -228,14 +228,90 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
   },
   {
     name: 'delegate_stakeholder_analysis',
-    description: 'Send to Anjie (Stakeholder). Use for org chart analysis, Power-Interest mapping, influence analysis, communication strategy, and drafting stakeholder emails.',
+    description: `Send to Anjie (Stakeholder) when the intent is about PEOPLE, relationships, or communications. Triggers: "draft an email to", "how do I approach [person]", "stakeholder map", "who's the decision maker", "political dynamics", "get buy-in", "update [name]", "objection handling", "what does [stakeholder] really want", "prepare for the meeting with", "how to communicate". Anjie reads actual emails first, maps Power-Interest quadrants, surfaces true asks vs. stated requests, and drafts the actual communication using Voss-style techniques.`,
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The stakeholder analysis request' },
+        query: { type: 'string', description: 'The stakeholder/comms request — include all names, roles, recent interaction history, and what outcome is needed' },
         clientId: { type: 'string', description: 'Client ID if known' },
       },
       required: ['query'],
+    },
+  },
+
+  // ─── Google Workspace tools ──────────────────────────────────────
+  {
+    name: 'search_gmail',
+    description: 'Search Gmail for emails. Use proactively whenever the user asks about emails, conversations, or communications. Never ask Nicolas — just search. Supports Gmail operators: from:, to:, subject:, after:YYYY/MM/DD, before:, label:, has:attachment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Gmail search query' },
+        maxResults: { type: 'number', description: 'Max emails to return (default 5, max 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_email',
+    description: 'Read the full content of a specific email by message ID. Call search_gmail first to get message IDs.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        messageId: { type: 'string', description: 'Gmail message ID from search_gmail results' },
+      },
+      required: ['messageId'],
+    },
+  },
+  {
+    name: 'search_google_drive',
+    description: 'Search Google Drive for documents, spreadsheets, presentations, and files. Use proactively when looking for reports, proposals, contracts, or any document. Never ask Nicolas — just search.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Drive search query e.g. "fullText contains \'budget\'" or "name contains \'proposal\'"' },
+        maxResults: { type: 'number', description: 'Max files to return (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'read_drive_document',
+    description: 'Read the full text content of a Google Drive document by file ID. Call search_google_drive first to get the file ID.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fileId: { type: 'string', description: 'Google Drive file ID from search_google_drive results' },
+      },
+      required: ['fileId'],
+    },
+  },
+  {
+    name: 'book_meeting',
+    description: 'Schedule a meeting in Google Calendar.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Meeting title' },
+        dateTime: { type: 'string', description: 'Start date and time in ISO 8601 format (e.g. 2026-04-15T14:00:00)' },
+        attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses of attendees (optional)' },
+        durationMinutes: { type: 'number', description: 'Duration in minutes (default 60)' },
+      },
+      required: ['title', 'dateTime'],
+    },
+  },
+  {
+    name: 'create_task',
+    description: 'Create an action item or task for follow-up. Use when the user asks to remember something or create a to-do.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Task title' },
+        description: { type: 'string', description: 'Additional context or details' },
+        priority: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'], description: 'Task priority (default MEDIUM)' },
+        dueDate: { type: 'string', description: 'Due date in ISO 8601 format (optional)' },
+      },
+      required: ['title'],
     },
   },
 ]
