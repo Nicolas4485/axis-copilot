@@ -31,3 +31,12 @@ export { githubCreatePR, githubCreatePRDefinition } from './github-tools.js'
 
 // Google Workspace integration
 export * as google from './google/index.js'
+
+// Gmail tools (text-mode ToolRegistry)
+export { searchGmail, searchGmailDefinition, readEmail, readEmailDefinition } from './gmail-tools.js'
+
+// Drive tools (text-mode ToolRegistry)
+export { searchGoogleDrive, searchGoogleDriveDefinition, readDriveDocument, readDriveDocumentDefinition } from './drive-tools.js'
+
+// Calendar + Task tools (text-mode ToolRegistry)
+export { bookMeeting, bookMeetingDefinition, createTask, createTaskDefinition } from './calendar-task-tools.js'
