@@ -128,7 +128,8 @@ integrationsRouter.get('/google/callback', async (req: Request, res: Response) =
       },
     })
 
-    res.json({ success: true, provider, message: 'Google integration connected' })
+    const webBase = process.env['WEB_BASE_URL'] ?? 'http://localhost:3000'
+    res.redirect(`${webBase}/settings?connected=${encodeURIComponent(provider)}`)
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'OAuth callback failed', code: 'OAUTH_CALLBACK_ERROR', details: errorMsg })

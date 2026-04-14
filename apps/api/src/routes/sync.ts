@@ -435,7 +435,8 @@ syncRouter.post('/gmail', async (req: Request, res: Response) => {
     return
   }
 
-  const searchQuery = parsed.data.query ?? 'newer_than:30d'
+  // Default: only emails relevant to the Aura Commodities engagement
+  const searchQuery = parsed.data.query ?? '(from:auracommodities.com OR to:auracommodities.com OR subject:Aura) newer_than:90d'
   const maxResults = parsed.data.maxResults ?? 50
   const clientId = parsed.data.clientId
 
