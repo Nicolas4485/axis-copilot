@@ -141,3 +141,4 @@ vite.config.ts.timestamp-*
 # Local Claude preferences
 CLAUDE.local.md
 .turbo/
+_tmp_*
