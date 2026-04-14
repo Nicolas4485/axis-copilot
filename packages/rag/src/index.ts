@@ -174,7 +174,7 @@ export class RAGEngine {
       { property: 'valuation',   source: String.raw`valuation\s*(?:of|is|:)\s*\$?([\d,.]+\s*(?:billion|million|[BMb])?)` },
       { property: 'funding',     source: String.raw`(?:raised|total funding)\s+(?:of\s+)?\$?([\d,.]+\s*(?:billion|million|[BMb])?)` },
       { property: 'employees',   source: String.raw`(?:has\s+)?([\d,]+)\s+employees` },
-      { property: 'headcount',   source: String.raw`headcount\s*(?:of|is|:)\s*([\d,]+)` },
+      { property: 'headcount',   source: String.raw`headcount\s*(?:of|is:?|:)\s*([\d,]+)` },
       { property: 'CEO',         source: String.raw`CEO\s*(?:is|was|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)` },
       { property: 'CTO',         source: String.raw`CTO\s*(?:is|was|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)` },
       { property: 'CFO',         source: String.raw`CFO\s*(?:is|was|:)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)` },
@@ -183,8 +183,9 @@ export class RAGEngine {
       { property: 'headquarters', source: String.raw`headquartered\s+in\s+([A-Za-z][a-zA-Z\s]+?)(?=\s*[.,\n])` },
     ]
 
-    // Entity candidates: two or more consecutive capitalised words
-    const ENTITY_RE = /\b([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,4})\b/g
+    // Entity candidates: exactly two consecutive capitalised words (limits false positives
+    // from property keywords like ARR/CEO/CTO being greedily included in entity names)
+    const ENTITY_RE = /\b([A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+)\b/g
 
     interface ChunkFact {
       entity: string
