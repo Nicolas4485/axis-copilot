@@ -1,4 +1,4 @@
-// BaseAgent — agentic loop with tool execution and iterative retrieval
+// BaseAgent — plan → retrieve → reflect → synthesise loop
 // ALL model calls go through InferenceEngine — never call Anthropic SDK directly
 
 import { InferenceEngine } from '@axis/inference'
@@ -10,18 +10,56 @@ import type {
   AgentConfig,
   AgentContext,
   AgentResponse,
+  AgentTrace,
   Citation,
   ConflictFound,
   MemoryUpdate,
+  QueryPlanItem,
   RAGResult,
+  ReflectionResult,
+  RetrievedEvidence,
   ToolResult,
 } from './types.js'
 
-const MAX_ITERATIONS = 10
-const MAX_RETRIEVAL_CYCLES = 2
-// Hard wall-clock limit for the entire agentic loop. Prevents infinite hangs
-// when the Claude API or a tool stalls mid-loop.
-const AGENT_LOOP_TIMEOUT_MS = 25_000
+const MAX_ITERATIONS      = 6   // Cap tool-use iterations per synthesis step
+const MAX_REFLECT_CYCLES  = 2
+// Hard wall-clock limit for the synthesis tool loop.
+// Specialists run multiple tool calls so this needs headroom beyond Aria's loop.
+// Mel (competitive) can run 15+ web searches — 240s gives enough room.
+const AGENT_LOOP_TIMEOUT_MS = 240_000
+
+/**
+ * Extract the first complete JSON object or array from a model response.
+ * Handles: markdown code fences, leading prose, trailing prose.
+ */
+function extractJSON(text: string): string {
+  // Strip markdown code fences first
+  const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+  // Find the first { or [ and extract through its matching close
+  const start = stripped.search(/[{[]/)
+  if (start === -1) return stripped
+  const opener = stripped[start]
+  const closer = opener === '{' ? '}' : ']'
+  let depth = 0
+  let inString = false
+  let escape = false
+  for (let i = start; i < stripped.length; i++) {
+    const ch = stripped[i]
+    if (escape) { escape = false; continue }
+    if (ch === '\\' && inString) { escape = true; continue }
+    if (ch === '"') { inString = !inString; continue }
+    if (inString) continue
+    if (ch === opener) depth++
+    else if (ch === closer) {
+      depth--
+      if (depth === 0) return stripped.slice(start, i + 1)
+    }
+  }
+  return stripped.slice(start)
+}
+
+// Trivial-query threshold: skip plan/reflect for short non-question inputs
+const TRIVIAL_WORD_LIMIT = 8
 
 export class BaseAgent {
   protected config: AgentConfig
@@ -39,87 +77,100 @@ export class BaseAgent {
   }
 
   /**
-   * Run the agent on a user message with full agentic loop.
+   * Run the agent: plan → retrieve → reflect (≤2 cycles) → synthesise with tool loop.
    *
-   * 1. Build messages with system prompt key, assembled context, RAG context
-   * 2. Evaluate if initial RAG context is sufficient; if not, trigger re-retrieval (up to 2 cycles)
-   * 3. Call InferenceEngine.route("agent_response")
-   * 4. If tool_use blocks: execute tools, feed results back
-   * 5. Repeat until no tool_use blocks or max iterations
-   * 6. Post-process: store message, update memory, attach citations
+   * 1. Check if query is trivial → short-circuit directly to synthesis
+   * 2. Decompose query into sub-questions with source assignments (LLM plan)
+   * 3. Retrieve per sub-question (vector_kb, graph, web)
+   * 4. Reflect: score evidence, identify gaps
+   * 5. If insufficient and cycles remain: refine plan → re-retrieve → re-reflect
+   * 6. Synthesise via existing tool loop with enriched context
    */
   async run(userMessage: string, context: AgentContext): Promise<AgentResponse> {
-    const toolsUsed: string[] = []
+    const traceStart     = Date.now()
+    const toolsUsed: string[]         = []
     const memoryUpdates: MemoryUpdate[] = []
-    const citations: Citation[] = this.extractCitations(context)
+    const citations: Citation[]         = this.extractCitations(context)
     const conflictsFound: ConflictFound[] = this.extractConflicts(context)
 
-    // Evaluate and potentially re-retrieve context if insufficient
-    let ragContext = context.ragResult
-    let retrievalCycle = 1
+    // ── 1. Trivial-query check ───────────────────────────────────────────────
+    const trivialQuery = this.isTrivialQuery(userMessage)
+    let queryPlan: QueryPlanItem[]      = []
+    const reflections: ReflectionResult[] = []
+    let retrievalCycles                  = 0
+    let planContextString                = ''
 
-    while (retrievalCycle <= MAX_RETRIEVAL_CYCLES && ragContext) {
-      const isSufficient = await this.evaluateContextSufficiency(
-        userMessage,
-        ragContext,
-        retrievalCycle
-      )
+    if (trivialQuery) {
+      console.log(`[AgentTrace] trivial_query=true — skipping plan/reflect`)
+    } else {
+      // ── 2. Query planning ──────────────────────────────────────────────────
+      queryPlan = await this.planQuery(userMessage, context)
+      console.log(`[AgentTrace] query_plan: ${JSON.stringify(queryPlan)}`)
 
-      if (isSufficient) {
-        console.log(`[Agent] RAG context deemed sufficient at cycle ${retrievalCycle}`)
-        break
+      // ── 3+4. Retrieve → reflect loop (max 2 cycles) ────────────────────────
+      let allEvidence: RetrievedEvidence[] = []
+
+      for (let cycle = 0; cycle < MAX_REFLECT_CYCLES; cycle++) {
+        retrievalCycles++
+
+        const cycleEvidence = await this.retrieveForPlan(queryPlan, context)
+        allEvidence = [...allEvidence, ...cycleEvidence]
+
+        const reflection = await this.reflectOnEvidence(userMessage, cycleEvidence)
+        reflections.push(reflection)
+        console.log(`[AgentTrace] reflection_cycle_${cycle + 1}: ${JSON.stringify(reflection)}`)
+
+        if (reflection.sufficient) {
+          console.log(`[AgentTrace] sufficient=true at cycle ${cycle + 1} — proceeding to synthesis`)
+          break
+        }
+
+        if (cycle < MAX_REFLECT_CYCLES - 1) {
+          console.log(`[AgentTrace] sufficient=false — refining plan for cycle ${cycle + 2}`)
+          queryPlan = await this.refinePlan(userMessage, reflection, queryPlan)
+        } else {
+          console.log(`[AgentTrace] max_reflect_cycles reached — proceeding with available evidence`)
+        }
       }
 
-      if (retrievalCycle < MAX_RETRIEVAL_CYCLES) {
-        console.log(`[Agent] Context insufficient at cycle ${retrievalCycle} — re-retrieving...`)
-        ragContext = await this.triggerReRetrieval(userMessage, ragContext, context)
-        retrievalCycle++
-      } else {
-        console.log(`[Agent] Max retrieval cycles (${MAX_RETRIEVAL_CYCLES}) reached`)
-        break
-      }
+      // ── Build enriched context block from all collected evidence ───────────
+      planContextString = this.buildPlanContextString(allEvidence, reflections)
     }
 
-    // Update context with potentially re-retrieved results
-    context = { ...context, ragResult: ragContext }
+    // ── 5. Synthesis: existing tool loop with enriched context ────────────────
+    const userContent = this.buildUserContent(userMessage, context, planContextString || undefined)
 
-    // Build the user turn with assembled context and RAG context
-    const userContent = this.buildUserContent(userMessage, context)
-
-    // Get tool definitions for this agent's tools
     const toolDefinitions = this.toolRegistry
       .getDefinitions(this.config.tools)
       .map((def) => ({
-        name: def.name,
-        description: def.description,
+        name:         def.name,
+        description:  def.description,
         input_schema: def.inputSchema,
       }))
 
-    // Conversation messages for the agentic loop
     const messages: InferenceMessage[] = [
       { role: 'user', content: userContent },
     ]
 
     let finalTextContent = ''
-    let reasoning = ''
-    const loopStartMs = Date.now()
+    let reasoning        = ''
+    const loopStartMs    = Date.now()
 
-    // Agentic loop
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       if (Date.now() - loopStartMs > AGENT_LOOP_TIMEOUT_MS) {
-        console.warn(`[Agent] Loop timeout after ${AGENT_LOOP_TIMEOUT_MS / 1000} s at iteration ${iteration} — returning partial result`)
+        console.warn(`[Agent] Loop timeout after ${AGENT_LOOP_TIMEOUT_MS / 1000}s at iteration ${iteration} — returning partial result`)
         finalTextContent = finalTextContent || 'Analysis timed out — the request is taking too long. Please try again.'
         break
       }
+
       const response = await this.engine.route('agent_response', {
         systemPromptKey: this.config.systemPromptKey,
         messages,
         tools: toolDefinitions,
         sessionId: context.sessionId,
-        userId: context.userId,
+        userId:    context.userId,
       })
 
-      // Collect text blocks and tool_use blocks from response
       const textBlocks: string[] = []
       const toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
 
@@ -131,16 +182,13 @@ export class BaseAgent {
         }
       }
 
-      // Append assistant message to conversation
       messages.push({ role: 'assistant', content: response.content })
 
-      // If no tool calls, we're done
       if (toolUseBlocks.length === 0 || response.stopReason !== 'tool_use') {
         finalTextContent = textBlocks.join('\n')
         break
       }
 
-      // Execute each tool and collect results
       const toolResultContent: InferenceContentBlock[] = []
 
       for (const toolUse of toolUseBlocks) {
@@ -148,8 +196,8 @@ export class BaseAgent {
 
         const toolContext = {
           sessionId: context.sessionId,
-          userId: context.userId,
-          clientId: context.clientId ?? '',
+          userId:    context.userId,
+          clientId:  context.clientId ?? '',
           requestId: `${context.sessionId}-${iteration}-${toolUse.id}`,
         }
 
@@ -159,35 +207,37 @@ export class BaseAgent {
           toolContext
         )
 
-        // Feed tool result back as tool_result block (required by Claude)
         toolResultContent.push({
-          type: 'tool_result' as const,
+          type:        'tool_result' as const,
           tool_use_id: toolUse.id,
-          content: JSON.stringify(
-            result.success ? result.data : { error: result.error }
-          ),
+          content:     JSON.stringify(result.success ? result.data : { error: result.error }),
         })
       }
 
       messages.push({ role: 'user', content: toolResultContent })
 
-      // Capture reasoning from intermediate text
       if (textBlocks.length > 0) {
         reasoning += textBlocks.join('\n') + '\n'
       }
     }
 
-    // Post-processing
-
-    // Prepend conflict warning if any
+    // ── Post-processing ───────────────────────────────────────────────────────
     let content = finalTextContent
     if (conflictsFound.length > 0) {
-      const conflictWarning = this.buildConflictWarning(conflictsFound)
-      content = conflictWarning + '\n\n' + content
+      content = this.buildConflictWarning(conflictsFound) + '\n\n' + content
     }
 
-    // Store message in working memory
     await this.memory.addToWorkingMemory(context.sessionId, 'ASSISTANT', content)
+
+    const trace: AgentTrace = {
+      trivialQuery,
+      queryPlan,
+      retrievalCycles,
+      reflections,
+      totalDurationMs: Date.now() - traceStart,
+    }
+
+    console.log(`[AgentTrace] complete: ${JSON.stringify({ trivialQuery, planItems: queryPlan.length, retrievalCycles, reflectionSufficient: reflections[reflections.length - 1]?.sufficient ?? null, totalDurationMs: trace.totalDurationMs })}`)
 
     return {
       content,
@@ -196,192 +246,397 @@ export class BaseAgent {
       memoryUpdates,
       citations,
       conflictsFound,
+      trace,
     }
   }
 
-  /** Evaluate if RAG context is sufficient to answer the query */
-  private async evaluateContextSufficiency(
-    userMessage: string,
-    ragResult: { metadata: { vectorChunksFound: number; totalChunksAfterRerank: number }; context: string },
-    retrievalCycle: number
-  ): Promise<boolean> {
-    // Heuristic checks:
-    // 1. At least 3 chunks retrieved after reranking
-    // 2. Context is substantial (>500 chars)
-    // 3. Query appears answerable from context
+  // ─── Plan ────────────────────────────────────────────────────────────────────
 
-    const hasMinimalChunks = ragResult.metadata.totalChunksAfterRerank >= 3
-    const hasSubstantialContext = ragResult.context.length > 500
+  // ─── Specialist hooks (override in subclasses) ───────────────────────────────
 
-    if (!hasMinimalChunks || !hasSubstantialContext) {
-      console.log(
-        `[Agent] Cycle ${retrievalCycle}: Insufficient chunks (${ragResult.metadata.totalChunksAfterRerank}) or context length (${ragResult.context.length})`
-      )
-      return false
-    }
-
-    // Use LLM to evaluate if context answers the query
-    try {
-      const response = await this.engine.route('classify', {
-        systemPromptKey: 'MICRO_CLASSIFY',
-        messages: [{
-          role: 'user',
-          content: `Given the user query and the retrieved context, is there sufficient information to answer the query? Reply YES or NO.
-
-Query: ${userMessage}
-
-Context: ${ragResult.context.slice(0, 1000)}...`,
-        }],
-        maxTokens: 10,
-      })
-
-      const text = response.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim()
-        .toUpperCase()
-
-      const sufficient = text.includes('YES')
-      console.log(`[Agent] Cycle ${retrievalCycle}: Context sufficiency = ${sufficient}`)
-      return sufficient
-    } catch (err) {
-      console.warn(`[Agent] Failed to evaluate context sufficiency: ${err instanceof Error ? err.message : 'Unknown'}`)
-      // Default to true if evaluation fails
-      return true
-    }
+  /**
+   * Inject a structured output schema into the synthesis step.
+   * Override in specialist subclasses to enforce section-based output.
+   * Returning null (default) means no schema injection.
+   */
+  protected specialistOutputSchema(): string | null {
+    return null
   }
 
   /**
-   * Re-retrieval: expand the user query into 2 alternative phrasings,
-   * re-query RAG with the best alternative, and return whichever result has
-   * more chunks. Falls back to the current result when RAG engine is unavailable.
+   * Append specialist-specific critique to the reflection prompt.
+   * e.g. Mel asks "is the source recent?", Sean asks "is the problem worth solving?"
+   * Returning null (default) means no additional critique.
    */
-  private async triggerReRetrieval(
-    userMessage: string,
-    currentRagResult: RAGResult,
-    context: AgentContext
-  ): Promise<RAGResult> {
-    if (!this.rag) {
-      console.log('[Agent] No RAG engine available for re-retrieval — keeping current result')
-      return currentRagResult
-    }
+  protected specialistReflectionCritique(): string | null {
+    return null
+  }
 
+  /**
+   * Heuristic: skip planning for short, conversational inputs that aren't questions.
+   * e.g. "hello", "thanks", "ok", "sounds good"
+   */
+  private isTrivialQuery(message: string): boolean {
+    const words = message.trim().split(/\s+/).filter((w) => w.length > 0)
+    const hasQuestion = message.includes('?')
+    return words.length < TRIVIAL_WORD_LIMIT && !hasQuestion
+  }
+
+  /**
+   * Decompose the user query into sub-questions with source assignments.
+   * Falls back to a single vector_kb sub-question on error.
+   */
+  private async planQuery(
+    userMessage: string,
+    _context: AgentContext
+  ): Promise<QueryPlanItem[]> {
     try {
-      // Step 1: Generate an expanded/rephrased query using InferenceEngine
-      const expansionResponse = await this.engine.route('query_expansion', {
-        systemPromptKey: 'MICRO_CLASSIFY',
+      const response = await this.engine.route('rag_plan', {
+        systemPromptKey: 'RAG_QUERY_PLAN',
         messages: [{
           role: 'user',
-          content: `The following query did not retrieve sufficient context from the knowledge base. Rewrite it in 1-2 alternative phrasings that might match different terminology in the documents. Output only the rephrased queries, one per line, no explanation.
-
-Original query: ${userMessage}`,
+          content: `User query: ${userMessage}`,
         }],
-        maxTokens: 150,
+        maxTokens: 400,
       })
 
-      const expansionText = expansionResponse.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim()
+      const text = extractJSON(
+        response.content
+          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+          .map((b) => b.text)
+          .join('')
+          .trim()
+      )
 
-      const expandedQueries = expansionText
-        .split('\n')
-        .map((q) => q.replace(/^\d+[\.\)]\s*/, '').trim())
-        .filter((q) => q.length > 10)
-        .slice(0, 2)
+      const parsed = JSON.parse(text) as { subQuestions?: unknown[] }
+      const items = parsed.subQuestions
 
-      if (expandedQueries.length === 0) return currentRagResult
-
-      // Step 2: Re-query with the first expanded query
-      const expandedQuery = expandedQueries[0]!
-      console.log(`[Agent] Re-retrieval query: "${expandedQuery}"`)
-
-      const newResult = await this.rag.query(expandedQuery, context.userId, context.clientId)
-
-      // Step 3: Return whichever result has more chunks
-      const currentChunks = currentRagResult.metadata?.totalChunksAfterRerank ?? 0
-      const newChunks = newResult.metadata?.totalChunksAfterRerank ?? 0
-
-      if (newChunks > currentChunks) {
-        console.log(`[Agent] Re-retrieval improved: ${currentChunks} → ${newChunks} chunks`)
-        return newResult
+      if (!Array.isArray(items) || items.length === 0) {
+        return this.fallbackPlan(userMessage)
       }
 
-      console.log(`[Agent] Re-retrieval did not improve (${currentChunks} → ${newChunks}), keeping original`)
-      return currentRagResult
+      return items
+        .slice(0, 3)
+        .map((item) => {
+          const i = item as Record<string, unknown>
+          return {
+            subQuestion: String(i['subQuestion'] ?? userMessage),
+            source:      this.validateSource(i['source']),
+            rationale:   String(i['rationale'] ?? ''),
+          }
+        })
     } catch (err) {
-      console.warn(`[Agent] Re-retrieval failed: ${err instanceof Error ? err.message : 'Unknown'}`)
-      return currentRagResult
+      console.warn(`[Agent] planQuery failed: ${err instanceof Error ? err.message : String(err)} — using fallback plan`)
+      return this.fallbackPlan(userMessage)
     }
   }
 
-  /** Build the user content with assembled context and RAG context */
-  private buildUserContent(userMessage: string, context: AgentContext): string {
+  private validateSource(raw: unknown): QueryPlanItem['source'] {
+    if (raw === 'graph' || raw === 'web') return raw
+    return 'vector_kb'
+  }
+
+  private fallbackPlan(userMessage: string): QueryPlanItem[] {
+    return [{ subQuestion: userMessage, source: 'vector_kb', rationale: 'fallback' }]
+  }
+
+  // ─── Retrieve ────────────────────────────────────────────────────────────────
+
+  /**
+   * Dispatch each plan item to its assigned retrieval source.
+   * vector_kb → RAGEngine, graph → get_graph_context tool, web → web_search tool.
+   */
+  private async retrieveForPlan(
+    plan: QueryPlanItem[],
+    context: AgentContext
+  ): Promise<RetrievedEvidence[]> {
+    const results = await Promise.allSettled(
+      plan.map((item) => this.retrieveOneItem(item, context))
+    )
+
+    return results
+      .map((r, i) => {
+        if (r.status === 'fulfilled') return r.value
+        console.warn(`[Agent] retrieveForPlan item ${i} failed: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`)
+        return {
+          subQuestion: plan[i]!.subQuestion,
+          source:      plan[i]!.source,
+          content:     '',
+          chunkCount:  0,
+        }
+      })
+  }
+
+  private async retrieveOneItem(
+    item: QueryPlanItem,
+    context: AgentContext
+  ): Promise<RetrievedEvidence> {
+    const toolCtx = {
+      sessionId: context.sessionId,
+      userId:    context.userId,
+      clientId:  context.clientId ?? '',
+      requestId: `plan-${Date.now()}`,
+    }
+
+    if (item.source === 'vector_kb') {
+      if (!this.rag) {
+        return { subQuestion: item.subQuestion, source: 'vector_kb', content: '', chunkCount: 0 }
+      }
+      const result: RAGResult = await this.rag.query(item.subQuestion, context.userId, context.clientId)
+      return {
+        subQuestion: item.subQuestion,
+        source:      'vector_kb',
+        content:     result.context,
+        chunkCount:  result.metadata?.totalChunksAfterRerank ?? 0,
+      }
+    }
+
+    if (item.source === 'graph') {
+      const toolResult: ToolResult = await this.toolRegistry.executeTool(
+        'get_graph_context',
+        { query: item.subQuestion, clientId: context.clientId ?? '' },
+        toolCtx
+      )
+      const content = toolResult.success
+        ? JSON.stringify(toolResult.data).slice(0, 2000)
+        : ''
+      return { subQuestion: item.subQuestion, source: 'graph', content, chunkCount: content ? 1 : 0 }
+    }
+
+    if (item.source === 'web') {
+      const toolResult: ToolResult = await this.toolRegistry.executeTool(
+        'web_search',
+        { query: item.subQuestion },
+        toolCtx
+      )
+      const content = toolResult.success
+        ? JSON.stringify(toolResult.data).slice(0, 2000)
+        : ''
+      return { subQuestion: item.subQuestion, source: 'web', content, chunkCount: content ? 1 : 0 }
+    }
+
+    return { subQuestion: item.subQuestion, source: item.source, content: '', chunkCount: 0 }
+  }
+
+  // ─── Reflect ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Critique the collected evidence. Returns whether it sufficiently answers
+   * the query, what's missing, and per-source relevance scores.
+   */
+  private async reflectOnEvidence(
+    userMessage: string,
+    evidence: RetrievedEvidence[]
+  ): Promise<ReflectionResult> {
+    const noContent = evidence.every((e) => !e.content)
+    if (noContent) {
+      return { sufficient: false, missingInfo: ['No evidence retrieved'], snippetScores: [] }
+    }
+
+    const evidenceSummary = evidence
+      .filter((e) => e.content)
+      .map((e) => `[${e.source}] ${e.subQuestion}:\n${e.content.slice(0, 600)}`)
+      .join('\n\n---\n\n')
+
+    try {
+      const critique = this.specialistReflectionCritique()
+      const critiqueNote = critique ? `\n\nAdditional evaluation criteria:\n${critique}` : ''
+
+      const response = await this.engine.route('rag_reflect', {
+        systemPromptKey: 'RAG_REFLECT',
+        messages: [{
+          role: 'user',
+          content: `User question: ${userMessage}\n\nRetrieved evidence:\n${evidenceSummary}${critiqueNote}`,
+        }],
+        maxTokens: 600,
+      })
+
+      const text = extractJSON(
+        response.content
+          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+          .map((b) => b.text)
+          .join('')
+          .trim()
+      )
+
+      const parsed = JSON.parse(text) as {
+        sufficient?: boolean
+        missingInfo?: unknown[]
+        snippetScores?: Array<{ source: unknown; score: unknown }>
+      }
+
+      return {
+        sufficient:    parsed.sufficient === true,
+        missingInfo:   Array.isArray(parsed.missingInfo)
+          ? parsed.missingInfo.map(String)
+          : [],
+        snippetScores: Array.isArray(parsed.snippetScores)
+          ? parsed.snippetScores.map((s) => ({
+              source: String(s.source ?? ''),
+              score:  Number(s.score ?? 0),
+            }))
+          : [],
+      }
+    } catch (err) {
+      console.warn(`[Agent] reflectOnEvidence failed: ${err instanceof Error ? err.message : String(err)} — defaulting to sufficient=true`)
+      // Don't block synthesis on reflection failure
+      return { sufficient: true, missingInfo: [], snippetScores: [] }
+    }
+  }
+
+  // ─── Refine ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Generate a refined plan targeting identified gaps.
+   * Reuses query_expansion to rephrase missing-info items into sub-questions.
+   */
+  private async refinePlan(
+    userMessage: string,
+    reflection: ReflectionResult,
+    prevPlan: QueryPlanItem[]
+  ): Promise<QueryPlanItem[]> {
+    if (reflection.missingInfo.length === 0) return prevPlan
+
+    const gapText = reflection.missingInfo.join('; ')
+
+    try {
+      const response = await this.engine.route('rag_plan', {
+        systemPromptKey: 'RAG_QUERY_PLAN',
+        messages: [{
+          role: 'user',
+          content: `Original query: ${userMessage}\nInformation gaps identified: ${gapText}\nGenerate up to 2 sub-questions specifically targeting these gaps.`,
+        }],
+        maxTokens: 300,
+      })
+
+      const text = extractJSON(
+        response.content
+          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+          .map((b) => b.text)
+          .join('')
+          .trim()
+      )
+
+      const parsed = JSON.parse(text) as { subQuestions?: unknown[] }
+      const items  = parsed.subQuestions
+
+      if (!Array.isArray(items) || items.length === 0) return prevPlan
+
+      const refined = items.slice(0, 2).map((item) => {
+        const i = item as Record<string, unknown>
+        return {
+          subQuestion: String(i['subQuestion'] ?? gapText),
+          source:      this.validateSource(i['source']),
+          rationale:   String(i['rationale'] ?? 'gap-fill'),
+        }
+      })
+
+      console.log(`[AgentTrace] refined_plan: ${JSON.stringify(refined)}`)
+      return refined
+    } catch (err) {
+      console.warn(`[Agent] refinePlan failed: ${err instanceof Error ? err.message : String(err)} — keeping original plan`)
+      return prevPlan
+    }
+  }
+
+  // ─── Context assembly ────────────────────────────────────────────────────────
+
+  /**
+   * Build a structured evidence block from all plan retrievals.
+   * Injected into user content so the synthesis step sees richer context.
+   */
+  private buildPlanContextString(
+    evidence: RetrievedEvidence[],
+    reflections: ReflectionResult[]
+  ): string {
+    const evidenceParts = evidence
+      .filter((e) => e.content)
+      .map((e) => `[${e.source.toUpperCase()}] ${e.subQuestion}\n${e.content.slice(0, 1500)}`)
+      .join('\n\n')
+
+    if (!evidenceParts) return ''
+
+    const lastReflection = reflections[reflections.length - 1]
+    const gapNote = lastReflection && !lastReflection.sufficient && lastReflection.missingInfo.length > 0
+      ? `\nNote: The following information was not found in retrieved sources: ${lastReflection.missingInfo.join(', ')}.`
+      : ''
+
+    return evidenceParts + gapNote
+  }
+
+  /** Build the user content block with all context layers */
+  private buildUserContent(
+    userMessage: string,
+    context: AgentContext,
+    planContext?: string
+  ): string {
     const parts: string[] = []
 
-    // Assembled context from InfiniteMemory (memory, client info, session history)
     if (context.assembledContext) {
       parts.push(`<CONTEXT>\n${context.assembledContext}\n</CONTEXT>`)
     }
 
-    // RAG knowledge context — already formatted by ContextCompressor
-    if (context.ragResult && context.ragResult.context) {
+    // Original RAG context (pre-retrieved by caller)
+    if (context.ragResult?.context) {
       parts.push(context.ragResult.context)
     }
 
-    // Client record if available
+    // Plan-driven retrieval evidence (new)
+    if (planContext) {
+      parts.push(`<PLANNED_RETRIEVAL>\n${planContext}\n</PLANNED_RETRIEVAL>`)
+    }
+
     if (context.clientRecord) {
       parts.push(
         `<CLIENT>\nName: ${context.clientRecord.name}\nIndustry: ${context.clientRecord.industry}\nSize: ${context.clientRecord.companySize}\n</CLIENT>`
       )
     }
 
-    // Stakeholders if available
     if (context.stakeholders.length > 0) {
-      const stakeholderList = context.stakeholders
+      const list = context.stakeholders
         .map((s) => `- ${s.name} (${s.role}) | Influence: ${s.influence} | Interest: ${s.interest}`)
         .join('\n')
-      parts.push(`<STAKEHOLDERS>\n${stakeholderList}\n</STAKEHOLDERS>`)
+      parts.push(`<STAKEHOLDERS>\n${list}\n</STAKEHOLDERS>`)
     }
 
-    // The actual user message
-    parts.push(userMessage)
+    // Specialist output schema — enforce structured sections
+    const schema = this.specialistOutputSchema()
+    if (schema) {
+      parts.push(`<OUTPUT_FORMAT>\n${schema}\n</OUTPUT_FORMAT>`)
+    }
 
+    parts.push(userMessage)
     return parts.join('\n\n')
   }
 
-  /** Extract citations from RAG result */
+  // ─── Citation / conflict helpers ──────────────────────────────────────────────
+
   private extractCitations(context: AgentContext): Citation[] {
     if (!context.ragResult) return []
     return context.ragResult.citations.map((c) => ({
-      documentId: c.documentId,
-      chunkId: c.chunkId,
-      content: c.content,
+      documentId:     c.documentId,
+      chunkId:        c.chunkId,
+      content:        c.content,
       relevanceScore: c.relevanceScore,
-      sourceTitle: c.sourceTitle,
+      sourceTitle:    c.sourceTitle,
     }))
   }
 
-  /** Extract conflicts from RAG result */
   private extractConflicts(context: AgentContext): ConflictFound[] {
     if (!context.ragResult) return []
     return context.ragResult.conflicts.map((c) => ({
       entityName: c.entityName,
-      property: c.property,
-      valueA: c.valueA,
-      valueB: c.valueB,
-      sourceA: c.sourceA,
-      sourceB: c.sourceB,
+      property:   c.property,
+      valueA:     c.valueA,
+      valueB:     c.valueB,
+      sourceA:    c.sourceA,
+      sourceB:    c.sourceB,
     }))
   }
 
-  /** Build a conflict warning message */
   private buildConflictWarning(conflicts: ConflictFound[]): string {
     const lines = conflicts.map(
-      (c) =>
-        `- ${c.entityName}.${c.property}: "${c.valueA}" (${c.sourceA}) vs "${c.valueB}" (${c.sourceB})`
+      (c) => `- ${c.entityName}.${c.property}: "${c.valueA}" (${c.sourceA}) vs "${c.valueB}" (${c.sourceB})`
     )
     return `⚠️ CONFLICTING INFORMATION DETECTED:\n${lines.join('\n')}\nPlease verify before relying on this data.`
   }
