@@ -159,12 +159,27 @@ export const health = {
 
 // ─── Knowledge ────────────────────────────────────────────────
 
+export interface EntityDetailsResponse {
+  entityId: string
+  entity: { id: string; name: string; label: string } | null
+  relationships: Array<{
+    type: string
+    direction: 'outbound' | 'inbound'
+    other: { id: string; name: string; label: string }
+  }>
+  documents: Array<{ id: string; title: string }>
+  available?: boolean
+}
+
 export const knowledge = {
   getConflicts: (clientId: string) =>
     request<{ conflicts: unknown[]; count: number }>(`/api/knowledge/conflicts/${clientId}`),
 
   getGraph: (clientId: string) =>
     request<{ nodes: unknown[]; relationships: unknown[] }>(`/api/knowledge/graph/${clientId}`),
+
+  getEntityDetails: (entityId: string) =>
+    request<EntityDetailsResponse>(`/api/knowledge/entities/${entityId}/details`),
 }
 
 // ─── Analytics ────────────────────────────────────────────────

@@ -26,6 +26,19 @@ export type RelationshipProperties = Omit<BaseRelationship, 'type'> & {
   [key: string]: unknown
 }
 
+/** Detail view for a single entity — direct relationships + source doc provenance */
+export interface EntityDetails {
+  id: string
+  name: string
+  label: string
+  sourceDocIds: string[]
+  relationships: Array<{
+    type: string
+    direction: 'outbound' | 'inbound'
+    other: { id: string; name: string; label: string }
+  }>
+}
+
 /**
  * Graph operations backed by Neo4j.
  *
@@ -202,17 +215,19 @@ export class GraphOperations {
    * connected to the client node within 3 hops.
    */
   async getClientSubgraph(clientId: string): Promise<Subgraph | null> {
+    // Return relationships as maps that include the custom .id properties of
+    // start/end nodes — the raw Neo4j relationship object only has internal
+    // element IDs, so we must project fromId/toId via Cypher.
     const cypher = `
       MATCH (client:Client {id: $clientId})
-      OPTIONAL MATCH path = (client)-[*..3]-(related)
-      WITH client, collect(DISTINCT related) AS relatedNodes,
-           collect(DISTINCT relationships(path)) AS allRelPaths
+      OPTIONAL MATCH (client)-[*..3]-(related)
+      WITH client, collect(DISTINCT related) AS relatedNodes
       UNWIND relatedNodes AS node
-      OPTIONAL MATCH (node)-[r]-(other)
-      WHERE other IN relatedNodes OR other = client
+      OPTIONAL MATCH (a)-[r]->(b)
+      WHERE (a = node OR a = client) AND (b IN relatedNodes OR b = client)
       RETURN client,
              collect(DISTINCT node) AS nodes,
-             collect(DISTINCT r) AS relationships
+             collect(DISTINCT {relType: type(r), fromId: a.id, toId: b.id}) AS rels
     `
 
     const result = await this.client.query(cypher, { clientId })
@@ -222,7 +237,7 @@ export class GraphOperations {
     if (!record) return null
     const clientNode = this.recordToNode(record.get('client'), 'Client')
     const rawNodes = record.get('nodes') as unknown[]
-    const rawRels = record.get('relationships') as unknown[]
+    const rawRels = record.get('rels') as Array<{ relType: string; fromId: string; toId: string } | null>
 
     const nodes: GraphNode[] = [clientNode]
     for (const n of rawNodes) {
@@ -233,10 +248,12 @@ export class GraphOperations {
 
     const relationships: GraphRelationship[] = []
     for (const r of rawRels) {
-      if (r !== null) {
-        relationships.push(
-          this.recordToRelationship(r, this.extractRelType(r), '', '')
-        )
+      if (r !== null && r.fromId && r.toId) {
+        relationships.push({
+          type: r.relType as RelationshipType,
+          fromId: r.fromId,
+          toId: r.toId,
+        } as GraphRelationship)
       }
     }
 
@@ -371,6 +388,82 @@ export class GraphOperations {
     }
 
     return lines.join('\n')
+  }
+
+  /**
+   * Get direct relationships and source provenance for a single entity node.
+   * Used to populate the entity detail panel in the knowledge graph UI.
+   */
+  async getEntityDetails(entityId: string): Promise<EntityDetails | null> {
+    // Two-pass: collect outbound rels with WITH, then collect inbound rels.
+    // Avoids cartesian product that would arise from two OPTIONAL MATCHes in one block.
+    const cypher = `
+      MATCH (n {id: $entityId})
+      OPTIONAL MATCH (n)-[outR]->(outNode)
+      WITH n,
+           collect(DISTINCT {
+             relType:    type(outR),
+             otherId:    outNode.id,
+             otherName:  outNode.name,
+             otherLabel: labels(outNode)[0]
+           }) AS outRels
+      OPTIONAL MATCH (n)<-[inR]-(inNode)
+      RETURN
+        n.id            AS id,
+        n.name          AS name,
+        labels(n)[0]    AS label,
+        n.sourceDocIds  AS sourceDocIds,
+        outRels,
+        collect(DISTINCT {
+          relType:    type(inR),
+          otherId:    inNode.id,
+          otherName:  inNode.name,
+          otherLabel: labels(inNode)[0]
+        }) AS inRels
+    `
+
+    const result = await this.client.query(cypher, { entityId })
+    if (!result || result.records.length === 0) return null
+
+    const record = result.records[0]
+    if (!record) return null
+
+    type RawRel = { relType: string | null; otherId: string | null; otherName: string | null; otherLabel: string | null }
+
+    const outRels = (record.get('outRels') as RawRel[])
+      .filter((r) => r.otherId !== null)
+      .map((r) => ({
+        type:      r.relType ?? 'RELATES_TO',
+        direction: 'outbound' as const,
+        other: {
+          id:    r.otherId!,
+          name:  r.otherName ?? r.otherId!,
+          label: r.otherLabel ?? 'Concept',
+        },
+      }))
+
+    const inRels = (record.get('inRels') as RawRel[])
+      .filter((r) => r.otherId !== null)
+      .map((r) => ({
+        type:      r.relType ?? 'RELATES_TO',
+        direction: 'inbound' as const,
+        other: {
+          id:    r.otherId!,
+          name:  r.otherName ?? r.otherId!,
+          label: r.otherLabel ?? 'Concept',
+        },
+      }))
+
+    const rawSourceDocIds = record.get('sourceDocIds')
+    const sourceDocIds = Array.isArray(rawSourceDocIds) ? (rawSourceDocIds as string[]) : []
+
+    return {
+      id:           record.get('id') as string,
+      name:         (record.get('name') as string | null) ?? '',
+      label:        (record.get('label') as string | null) ?? 'Concept',
+      sourceDocIds,
+      relationships: [...outRels, ...inRels],
+    }
   }
 
   // ─── Internal helpers ────────────────────────────────────────────

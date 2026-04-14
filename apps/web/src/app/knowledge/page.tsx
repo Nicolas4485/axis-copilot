@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { clients } from '@/lib/api'
 import { KnowledgeGraph } from '@/components/knowledge-graph'
@@ -9,9 +10,20 @@ import { Network, FileText, ChevronDown } from 'lucide-react'
 
 type KnowledgeTab = 'graph' | 'documents'
 
-export default function KnowledgePage() {
-  const [activeTab, setActiveTab] = useState<KnowledgeTab>('graph')
+function KnowledgePageContent() {
+  const searchParams = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const docParam = searchParams.get('doc')
+  const [activeTab, setActiveTab] = useState<KnowledgeTab>(
+    tabParam === 'documents' ? 'documents' : 'graph'
+  )
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+
+  // Sync tab when URL changes (e.g. sidebar link navigates here)
+  useEffect(() => {
+    if (tabParam === 'documents') setActiveTab('documents')
+    else if (tabParam === 'graph') setActiveTab('graph')
+  }, [tabParam])
 
   const { data: clientsData, isLoading } = useQuery({
     queryKey: ['clients'],
@@ -19,6 +31,12 @@ export default function KnowledgePage() {
   })
 
   const clientList = clientsData?.clients ?? []
+
+  useEffect(() => {
+    if (clientList.length > 0 && !selectedClientId) {
+      setSelectedClientId(clientList[0]!.id)
+    }
+  }, [clientList, selectedClientId])
 
   return (
     <div className="flex flex-col h-screen">
@@ -37,7 +55,7 @@ export default function KnowledgePage() {
             <select
               value={selectedClientId ?? ''}
               onChange={(e) => setSelectedClientId(e.target.value || null)}
-              className="input pr-8 appearance-none cursor-pointer"
+              className="input pr-8 appearance-none cursor-pointer bg-[var(--bg-tertiary)] text-[var(--text-primary)] border-[var(--border)]"
               disabled={isLoading}
             >
               <option value="">All clients</option>
@@ -110,10 +128,21 @@ export default function KnowledgePage() {
           )
         ) : (
           <div className="h-full overflow-y-auto">
-            <DocumentViewer {...(selectedClientId !== null ? { clientId: selectedClientId } : {})} />
+            <DocumentViewer
+            {...(selectedClientId !== null ? { clientId: selectedClientId } : {})}
+            {...(docParam !== null ? { initialDocumentId: docParam } : {})}
+          />
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+export default function KnowledgePage() {
+  return (
+    <Suspense fallback={null}>
+      <KnowledgePageContent />
+    </Suspense>
   )
 }

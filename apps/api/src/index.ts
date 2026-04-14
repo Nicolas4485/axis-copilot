@@ -16,6 +16,7 @@ import { costRouter } from './routes/cost.js'
 import { ariaRouter } from './routes/aria.js'
 import { handleAriaLiveWs } from './routes/aria-live-ws.js'
 import { syncRouter } from './routes/sync.js'
+import { documentsRouter } from './routes/documents.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
 import { syncClientsFromDrive } from './scripts/sync-clients-from-drive.js'
@@ -52,6 +53,7 @@ app.use('/api/exports', exportsRouter)
 app.use('/api/cost', costRouter)
 app.use('/api/aria', ariaRouter)
 app.use('/api/sync', syncRouter)
+app.use('/api/documents', documentsRouter)
 
 // ─── 404 fallthrough ───────────────────────────────────────────────────────────
 app.use((_req, res) => {

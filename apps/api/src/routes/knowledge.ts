@@ -171,6 +171,55 @@ knowledgeRouter.post('/conflicts/:id/resolve', async (req: Request, res: Respons
 })
 
 /**
+ * GET /api/knowledge/entities/:id/details — Entity relationships + source documents
+ */
+knowledgeRouter.get('/entities/:id/details', async (req: Request, res: Response) => {
+  try {
+    const entityId = req.params['id']!
+
+    const neo4jClient = new Neo4jClient()
+    const graphOps = new GraphOperations(neo4jClient)
+
+    if (!neo4jClient.isAvailable()) {
+      res.json({
+        entityId,
+        entity: null,
+        relationships: [],
+        documents: [],
+        available: false,
+        requestId: req.requestId,
+      })
+      return
+    }
+
+    const details = await graphOps.getEntityDetails(entityId)
+    if (!details) {
+      res.status(404).json({ error: 'Entity not found', code: 'NOT_FOUND', requestId: req.requestId })
+      return
+    }
+
+    // Enrich with document titles from Prisma
+    const documents = details.sourceDocIds.length > 0
+      ? await prisma.knowledgeDocument.findMany({
+          where: { id: { in: details.sourceDocIds } },
+          select: { id: true, title: true },
+        })
+      : []
+
+    res.json({
+      entityId,
+      entity:        { id: details.id, name: details.name, label: details.label },
+      relationships: details.relationships,
+      documents:     documents.map((d) => ({ id: d.id, title: d.title ?? d.id })),
+      requestId:     req.requestId,
+    })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to fetch entity details', code: 'ENTITY_DETAILS_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
  * GET /api/knowledge/graph/:clientId — Client knowledge graph subgraph
  */
 knowledgeRouter.get('/graph/:clientId', async (req: Request, res: Response) => {

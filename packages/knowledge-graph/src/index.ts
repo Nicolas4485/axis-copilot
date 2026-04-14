@@ -41,4 +41,4 @@ export type { Neo4jConfig, Neo4jHealthStatus } from './client.js'
 
 // Operations
 export { GraphOperations } from './operations.js'
-export type { NodeProperties, RelationshipProperties } from './operations.js'
+export type { NodeProperties, RelationshipProperties, EntityDetails } from './operations.js'
