@@ -48,6 +48,39 @@ export interface MemoryUpdate {
   tags: string[]
 }
 
+// ─── Plan / Reflect types ──────────────────────────────────────
+
+/** One item in the query decomposition plan */
+export interface QueryPlanItem {
+  subQuestion: string
+  source: 'vector_kb' | 'graph' | 'web'
+  rationale: string
+}
+
+/** Evidence collected for a single plan item */
+export interface RetrievedEvidence {
+  subQuestion: string
+  source: QueryPlanItem['source']
+  content: string
+  chunkCount: number
+}
+
+/** Output of the reflection/critique step */
+export interface ReflectionResult {
+  sufficient: boolean
+  missingInfo: string[]
+  snippetScores: Array<{ source: string; score: number }>
+}
+
+/** Full execution trace — attached to AgentResponse for observability */
+export interface AgentTrace {
+  trivialQuery: boolean
+  queryPlan: QueryPlanItem[]
+  retrievalCycles: number
+  reflections: ReflectionResult[]
+  totalDurationMs: number
+}
+
 /** What an agent returns after processing a message */
 export interface AgentResponse {
   content: string
@@ -57,6 +90,8 @@ export interface AgentResponse {
   citations: Citation[]
   conflictsFound: ConflictFound[]
   suggestedNextAgent?: SystemPromptKey | undefined
+  /** Execution trace for observability / future debug panel */
+  trace?: AgentTrace | undefined
 }
 
 /** Stakeholder summary passed into agent context */

@@ -27,6 +27,12 @@ import {
   githubCreateBranch, githubCreateBranchDefinition,
   githubWriteFile, githubWriteFileDefinition,
   githubCreatePR, githubCreatePRDefinition,
+  searchGmail, searchGmailDefinition,
+  readEmail, readEmailDefinition,
+  searchGoogleDrive, searchGoogleDriveDefinition,
+  readDriveDocument, readDriveDocumentDefinition,
+  bookMeeting, bookMeetingDefinition,
+  createTask, createTaskDefinition,
 } from '@axis/tools'
 
 interface ToolEntry {
@@ -60,6 +66,13 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   github_create_branch: { definition: githubCreateBranchDefinition, execute: githubCreateBranch },
   github_write_file: { definition: githubWriteFileDefinition, execute: githubWriteFile },
   github_create_pr: { definition: githubCreatePRDefinition, execute: githubCreatePR },
+  // Google tools — available in text-mode agentic loop
+  search_gmail: { definition: searchGmailDefinition, execute: searchGmail },
+  read_email: { definition: readEmailDefinition, execute: readEmail },
+  search_google_drive: { definition: searchGoogleDriveDefinition, execute: searchGoogleDrive },
+  read_drive_document: { definition: readDriveDocumentDefinition, execute: readDriveDocument },
+  book_meeting: { definition: bookMeetingDefinition, execute: bookMeeting },
+  create_task: { definition: createTaskDefinition, execute: createTask },
 }
 
 export class ToolRegistry {

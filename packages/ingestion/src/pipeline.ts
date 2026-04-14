@@ -9,6 +9,7 @@ import { Redis } from 'ioredis'
 import { InferenceEngine } from '@axis/inference'
 import { getParser } from './parsers/index.js'
 import { DriveDiscovery } from './drive-discovery.js'
+import type { NodeLabel } from '@axis/knowledge-graph'
 import type {
   ParsedDocument,
   DocumentChunk,
@@ -232,6 +233,14 @@ export class IngestionPipeline {
           ? `Found ${conflicts.length} conflict(s)`
           : 'No conflicts detected'
       )
+
+      // Step 11.5: Persist verified entities to Neo4j knowledge graph
+      if (clientId && verifiedEntities.length > 0) {
+        await this.storeEntitiesToGraph(verifiedEntities, documentId, clientId)
+        this.emitProgress(documentId, 'store_entities', 11.5,
+          `Stored ${verifiedEntities.length} entities to knowledge graph`
+        )
+      }
 
       // Step 12: Update records — create/update KnowledgeDocument in Prisma
       await this.updateRecords(documentId, {
@@ -687,6 +696,59 @@ Properties: ${JSON.stringify(entity.properties)}`,
     }
 
     return verified
+  }
+
+  /** Step 11.5: Persist verified entities to the Neo4j knowledge graph */
+  private async storeEntitiesToGraph(
+    entities: ExtractedEntity[],
+    documentId: string,
+    clientId: string
+  ): Promise<void> {
+    const ENTITY_TYPE_TO_LABEL: Record<string, NodeLabel> = {
+      CLIENT: 'Client',
+      COMPETITOR: 'Competitor',
+      TECHNOLOGY: 'Technology',
+      PERSON: 'Person',
+      PROCESS: 'Process',
+      INDUSTRY: 'Industry',
+      CONCEPT: 'Concept',
+    }
+
+    try {
+      const { Neo4jClient, GraphOperations } = await import('@axis/knowledge-graph')
+      const neo4jClient = new Neo4jClient()
+
+      if (!neo4jClient.isAvailable()) {
+        console.warn('[Pipeline] Neo4j unavailable — skipping entity storage')
+        return
+      }
+
+      const graphOps = new GraphOperations(neo4jClient)
+
+      for (const entity of entities) {
+        const label = ENTITY_TYPE_TO_LABEL[entity.type]
+        if (!label) continue
+
+        // Deterministic ID: stable across re-ingestion
+        const normalised = entity.name.toLowerCase().replace(/[^a-z0-9]/g, '_')
+        const nodeId = `${clientId}_${entity.type.toLowerCase()}_${normalised}`
+
+        try {
+          await graphOps.upsertNode(label, {
+            id: nodeId,
+            name: entity.name,
+            sourceDocIds: [documentId],
+            ...entity.properties,
+          })
+        } catch (nodeErr) {
+          console.warn(`[Pipeline] Failed to upsert entity "${entity.name}": ${nodeErr instanceof Error ? nodeErr.message : 'Unknown'}`)
+        }
+      }
+
+      await neo4jClient.close()
+    } catch {
+      console.warn('[Pipeline] Neo4j entity storage failed — continuing without graph')
+    }
   }
 
   /** Step 11: Detect conflicts with existing graph data */
