@@ -59,7 +59,7 @@ export class Reranker {
       const recency = this.computeRecency(chunk.createdAt)
       const sourceWeight = this.computeSourceWeight(chunk.sourceType)
       const clientBoost = this.computeClientBoost(chunk.clientId, options.targetClientId)
-      const conflictPenalty = conflictedSources.has(chunk.documentId) ? 1.0 : 0.0
+      const conflictPenalty = conflictedSources.has(chunk.sourceTitle) ? 1.0 : 0.0
 
       const finalScore =
         similarity * WEIGHTS.similarity +
