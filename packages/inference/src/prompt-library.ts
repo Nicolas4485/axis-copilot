@@ -91,6 +91,23 @@ const REPORT_SECTION: PromptEntry = {
   prompt: `Write a section of a consulting report based on the analysis provided. Use clear, professional language. Structure with a brief summary, detailed findings, supporting evidence (with source citations where available), and specific recommendations. Include data points and metrics when available. Write for a C-level audience.`,
 }
 
+const RAG_QUERY_PLAN: PromptEntry = {
+  key: 'RAG_QUERY_PLAN',
+  tier: 'TASK',
+  prompt: `You decompose user queries for multi-source retrieval. Output ONLY a JSON object, no explanation:
+{"subQuestions":[{"subQuestion":"...","source":"vector_kb","rationale":"..."}]}
+Sources: vector_kb=indexed documents and meeting notes, graph=knowledge-graph entities and relationships, web=current external/market data.
+Rules: max 3 sub-questions, no duplicates. Use vector_kb for document content, graph for people/companies/relationships, web for real-time or competitive data.`,
+}
+
+const RAG_REFLECT: PromptEntry = {
+  key: 'RAG_REFLECT',
+  tier: 'TASK',
+  prompt: `Evaluate whether retrieved evidence is sufficient to answer a user question. Output ONLY JSON, no explanation:
+{"sufficient":true,"missingInfo":[],"snippetScores":[{"source":"...","score":0.8}]}
+sufficient=true only when the question can be fully answered from the evidence. missingInfo must list specific information gaps when sufficient=false. Score each source 0.0-1.0 for relevance.`,
+}
+
 // ─── AGENT tier (<=800 tokens) ─────────────────────────────────
 
 const AGENT_BASE: PromptEntry = {
@@ -194,6 +211,8 @@ OUTPUT: Stakeholder map with Power-Interest positions, communication strategies 
 
 /** All prompts indexed by key */
 const PROMPT_REGISTRY: Record<string, PromptEntry> = {
+  RAG_QUERY_PLAN,
+  RAG_REFLECT,
   QUERY_DECOMPOSE,
   DOC_TYPE_DETECT,
   CLIENT_ATTRIBUTE,

@@ -46,6 +46,8 @@ export type InferenceTask =
   | 'contextual_retrieval' // Claude Haiku — chunk context retrieval
   | 'query_expansion'    // Claude Haiku — query synonym generation
   | 'relevance_score'    // Claude Haiku — passage relevance scoring
+  | 'rag_plan'           // Claude Haiku — decompose query into sub-questions with sources
+  | 'rag_reflect'        // Claude Haiku — score retrieved evidence and identify gaps
 
 /** System prompt tier determines max token budget */
 export type PromptTier = 'MICRO' | 'TASK' | 'AGENT'

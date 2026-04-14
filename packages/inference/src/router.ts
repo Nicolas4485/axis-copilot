@@ -138,6 +138,20 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     maxTokens: 10,
     jsonMode: false,
   },
+
+  // ─── Plan/reflect (Haiku + JSON) — new RAG loop primitives ─────
+  rag_plan: {
+    primary: 'claude',
+    claudeModel: 'haiku',
+    maxTokens: 400,
+    jsonMode: true,
+  },
+  rag_reflect: {
+    primary: 'claude',
+    claudeModel: 'haiku',
+    maxTokens: 250,
+    jsonMode: true,
+  },
 }
 
 /**
