@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useSearchParams } from 'next/navigation'
 import { health } from '@/lib/api'
 import { CheckCircle, XCircle, ExternalLink, RefreshCw, FolderOpen, Mail } from 'lucide-react'
 
@@ -72,30 +73,90 @@ function IntegrationCard({
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
 
+const PROVIDER_MAP: Record<string, string> = {
+  'google-drive': 'GOOGLE_DRIVE',
+  gmail: 'GMAIL',
+}
+
+interface SyncStatusResponse {
+  integrations: Array<{ provider: string; connected: boolean; tokenExpiry: string | null }>
+  syncStatus: Record<string, number>
+}
+
 export function WorkspaceSettings() {
   const [connecting, setConnecting] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const searchParams = useSearchParams()
+  const justConnected = searchParams.get('connected')
 
-  const { data: healthData, refetch, isRefetching } = useQuery({
+  const { data: healthData, refetch: refetchHealth, isRefetching } = useQuery({
     queryKey: ['health'],
     queryFn: () => health.check(),
     refetchInterval: 60_000,
     retry: 1,
   })
 
-  const handleConnect = (service: string) => {
+  const { data: syncData, refetch: refetchSync } = useQuery({
+    queryKey: ['integrations-sync-status'],
+    queryFn: async (): Promise<SyncStatusResponse> => {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
+      const res = await fetch(`${API_BASE}/api/integrations/google/sync-status`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) return { integrations: [], syncStatus: {} }
+      return res.json() as Promise<SyncStatusResponse>
+    },
+    refetchInterval: 30_000,
+    retry: 1,
+  })
+
+  const handleRefresh = () => {
+    void refetchHealth()
+    void refetchSync()
+  }
+
+  const isConnected = (provider: string) =>
+    syncData?.integrations.some((i) => i.provider === provider) ?? false
+
+  const handleConnect = async (service: string) => {
     setConnecting(service)
-    // OAuth redirect — the API handles the callback
-    window.location.href = `${API_BASE}/api/integrations/${service}/connect`
+    setConnectError(null)
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
+      if (!token) {
+        setConnectError('Not authenticated — please log in first.')
+        setConnecting(null)
+        return
+      }
+      const provider = PROVIDER_MAP[service]
+      if (!provider) throw new Error(`Unknown service: ${service}`)
+
+      const res = await fetch(`${API_BASE}/api/integrations/google/connect`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ provider }),
+      })
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'Connection failed' })) as { error: string }
+        throw new Error(errData.error)
+      }
+
+      const data = await res.json() as { authUrl: string }
+      window.location.href = data.authUrl
+    } catch (err) {
+      setConnectError(err instanceof Error ? err.message : 'Connection failed')
+      setConnecting(null)
+    }
   }
 
   const handleDisconnect = (_service: string) => {
-    // In a real implementation this would call DELETE /api/integrations/:service
-    // For now show a placeholder
     alert('Disconnect not yet implemented — remove the OAuth token from the database directly.')
   }
 
-  // Drive and Gmail connectivity are reflected in health check if the API tracks it
-  // Using health.neo4j as proxy for whether the backend is reachable
   const backendOnline = healthData?.status === 'ok'
 
   return (
@@ -108,13 +169,22 @@ export function WorkspaceSettings() {
           </p>
         </div>
         <button
-          onClick={() => { void refetch() }}
+          onClick={handleRefresh}
           disabled={isRefetching}
           className="p-1.5 border border-[var(--border)] rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50"
         >
           <RefreshCw size={14} className={isRefetching ? 'animate-spin' : ''} />
         </button>
       </div>
+
+      {justConnected && (
+        <div className="p-3 rounded-xl bg-[var(--success)]/5 border border-[var(--success)]/20">
+          <p className="text-xs text-[var(--success)]">
+            <CheckCircle size={12} className="inline mr-1.5" />
+            {justConnected.replace(/_/g, ' ')} connected successfully.
+          </p>
+        </div>
+      )}
 
       {!backendOnline && (
         <div className="p-3 rounded-xl bg-[var(--warning)]/5 border border-[var(--warning)]/20">
@@ -124,21 +194,27 @@ export function WorkspaceSettings() {
         </div>
       )}
 
+      {connectError && (
+        <div className="p-3 rounded-xl bg-[var(--error)]/5 border border-[var(--error)]/20">
+          <p className="text-xs text-[var(--error)]">{connectError}</p>
+        </div>
+      )}
+
       <div className="space-y-3">
         <IntegrationCard
           name="Google Drive"
           description="Ingest documents, presentations, and spreadsheets from Drive. Webhooks keep knowledge up to date."
           icon={FolderOpen}
-          connected={false}
-          onConnect={() => handleConnect('google-drive')}
+          connected={isConnected('GOOGLE_DRIVE')}
+          onConnect={() => { void handleConnect('google-drive') }}
           onDisconnect={() => handleDisconnect('google-drive')}
         />
         <IntegrationCard
           name="Gmail"
           description="Analyse email threads for client context, stakeholder mapping, and relationship intelligence."
           icon={Mail}
-          connected={false}
-          onConnect={() => handleConnect('gmail')}
+          connected={isConnected('GMAIL')}
+          onConnect={() => { void handleConnect('gmail') }}
           onDisconnect={() => handleDisconnect('gmail')}
         />
       </div>

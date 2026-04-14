@@ -52,6 +52,13 @@ export default function SessionPage() {
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [liveMode, setLiveMode] = useState(searchParams.get('live') === 'true')
   const autoMic = searchParams.get('automic') === 'true'
+
+  // Pre-fill input from ?prompt= query param (used by "Ask Aria" buttons elsewhere in the UI)
+  const promptParam = searchParams.get('prompt')
+  useEffect(() => {
+    if (promptParam) setInput(promptParam)
+  }, [promptParam]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
