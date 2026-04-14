@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@axis/web", "dev"],
+      "port": 3001,
+      "autoPort": false
+    },
+    {
+      "name": "API",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@axis/api", "dev"],
+      "port": 4000,
+      "autoPort": true
+    }
+  ]
+}
