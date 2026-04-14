@@ -30,7 +30,13 @@ const PORT = config.PORT
 
 // ─── Global middleware ─────────────────────────────────────────────────────────
 app.use(helmet())
-app.use(cors({ origin: process.env['ALLOWED_ORIGINS']?.split(',') ?? 'http://localhost:3000' }))
+// In dev, allow both :3000 and :3001 — Next.js falls back to 3001 when 3000 is taken.
+// In production, ALLOWED_ORIGINS must be set explicitly.
+const corsOrigins = process.env['ALLOWED_ORIGINS']?.split(',') ??
+  (config.NODE_ENV === 'development'
+    ? ['http://localhost:3000', 'http://localhost:3001']
+    : 'http://localhost:3000')
+app.use(cors({ origin: corsOrigins }))
 app.use(express.json({ limit: '10mb' }))
 app.use(injectRequestId)
 
