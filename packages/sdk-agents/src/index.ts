@@ -8,3 +8,6 @@ export {
   stakeholderSlice,
   allToolsSlice,
 } from './tool-slices.js'
+export { buildSpecialistDefinitions } from './specialist-definitions.js'
+export { AriaTextAgent } from './aria-text-agent.js'
+export type { AriaTextResult } from './aria-text-agent.js'

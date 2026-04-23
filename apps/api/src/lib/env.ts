@@ -2,7 +2,16 @@
 // Throws with a clear message if required vars are missing so the process exits
 // immediately rather than failing silently mid-request.
 
+import { config as loadDotenv } from 'dotenv'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { z } from 'zod'
+
+// Load .env from monorepo root before Zod validation.
+// Uses override:true so dotenv wins even when --env-file gave empty values.
+// Walk up from src/lib → src → apps/api → apps → monorepo root
+const __envFile = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../.env')
+loadDotenv({ path: __envFile, override: true })
 
 const envSchema = z.object({
   // Required
@@ -39,6 +48,16 @@ const envSchema = z.object({
 
   // GitHub — optional (enables private repo sync + higher rate limits)
   GITHUB_TOKEN: z.string().optional().default(''),
+
+  // Claude Agent SDK — optional (enables SDK-backed Aria text mode)
+  SDK_AGENTS_ENABLED: z.coerce.boolean().optional().default(false),
+
+  // Telegram bot — optional (enables Aria on Telegram for voice + text)
+  TELEGRAM_BOT_TOKEN: z.string().optional().default(''),
+  // The Axis user ID that Telegram conversations are attributed to (owner's account)
+  TELEGRAM_ARIA_USER_ID: z.string().optional().default(''),
+  // Production webhook URL (e.g. https://api.yourdomain.com). Omit to use long-polling in dev.
+  TELEGRAM_WEBHOOK_URL: z.string().optional().default(''),
 })
 
 export type Env = z.infer<typeof envSchema>

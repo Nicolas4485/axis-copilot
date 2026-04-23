@@ -6,12 +6,20 @@ import type { Request, Response } from 'express'
 import { z } from 'zod'
 import { rateLimit } from 'express-rate-limit'
 import { prisma } from '../lib/prisma.js'
+import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
+import { AriaTextAgent } from '@axis/sdk-agents'
 import { messagesRateLimit } from '../middleware/auth.js'
 
 const engine = new InferenceEngine()
 const aria = new Aria({ engine, prisma })
+// Instantiated once; `undefined` when SDK_AGENTS_ENABLED=false so there's no startup cost.
+let _sdkAriaAgent: AriaTextAgent | undefined
+function getSdkAgent(): AriaTextAgent {
+  if (!_sdkAriaAgent) _sdkAriaAgent = new AriaTextAgent()
+  return _sdkAriaAgent
+}
 
 export const ariaRouter = Router()
 
@@ -51,6 +59,18 @@ const ariaMessageSchema = z.object({
   imageBase64: z.string().optional(),
 })
 
+// ─── GET /api/aria/live-health ───────────────────────────────────
+// Returns Gemini Live availability status (no auth required — used for pre-flight check)
+
+ariaRouter.get('/live-health', (_req, res: Response) => {
+  const configured = !!env().GEMINI_API_KEY
+  res.json({
+    configured,
+    model: 'gemini-3.1-flash-live-preview',
+    status: configured ? 'available' : 'not_configured',
+  })
+})
+
 // ─── POST /api/aria/session-token ────────────────────────────────
 // Returns system instruction + tool declarations for Gemini Live session
 
@@ -74,7 +94,7 @@ ariaRouter.post('/session-token', sessionTokenRateLimit, async (req: Request, re
     }
 
     // Build live session config with memory context (no API key returned — SEC-1 fix)
-    const config = await aria.buildLiveSessionConfig(sessionId, req.userId!)
+    const config = await aria.buildLiveSessionConfig(sessionId, req.userId!, null, session.clientId)
 
     res.json({
       systemInstruction: config.systemInstruction,
@@ -226,56 +246,81 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
     res.write(`data: ${JSON.stringify({ ...(data as Record<string, unknown>), type })}\n\n`)
   }
 
+  // Load last 30 messages for intent classification and conversational context
+  const priorDbMessages = await prisma.message.findMany({
+    where: { sessionId },
+    orderBy: { createdAt: 'desc' },
+    take: 30,
+    select: { role: true, content: true },
+  })
+  const priorMessages = priorDbMessages
+    .reverse()
+    .map((m) => ({ role: m.role === 'USER' ? 'user' as const : 'assistant' as const, content: m.content }))
+
   try {
-    const ariaResponse = await aria.handleTextMessage(
-      sessionId,
-      req.userId!,
-      content,
-      imageBase64,
-      session.clientId
-    )
-
-    // Emit tool events
-    for (const tool of ariaResponse.toolsUsed) {
-      sendEvent('tool_start', { tool })
-      sendEvent('tool_result', { tool, status: 'completed' })
-    }
-
-    // Emit delegation events
-    for (const delegation of ariaResponse.delegations) {
-      sendEvent('delegation', { workerType: delegation.workerType, query: delegation.query })
-    }
-
-    // Emit conflict warnings
-    for (const conflict of ariaResponse.conflictsFound) {
-      sendEvent('conflict_warning', { conflict })
-    }
-
-    // Emit response
-    sendEvent('token', { content: ariaResponse.content })
-
-    // Emit sources
-    if (ariaResponse.citations.length > 0) {
-      sendEvent('sources', { citations: ariaResponse.citations })
-    }
-
-    // Store assistant message
-    await prisma.message.create({
-      data: {
+    if (env().SDK_AGENTS_ENABLED) {
+      // ── SDK path (Claude Agent SDK) ─────────────────────────────
+      const context = {
         sessionId,
-        role: 'ASSISTANT',
-        content: ariaResponse.content,
-        mode: 'intake',
-        metadata: JSON.parse(JSON.stringify({
-          toolsUsed: ariaResponse.toolsUsed,
-          citations: ariaResponse.citations,
-          delegations: ariaResponse.delegations,
-          reasoning: ariaResponse.reasoning,
-        })),
-      },
-    })
+        userId:    req.userId!,
+        clientId:  session.clientId ?? null,
+        requestId: req.requestId ?? '',
+      }
+      const result = await getSdkAgent().handleMessage(
+        content,
+        sessionId,
+        context,
+        (token) => sendEvent('token', { content: token })
+      )
+      await prisma.message.create({
+        data: {
+          sessionId,
+          role: 'ASSISTANT',
+          content: result.content,
+          mode: 'intake',
+          metadata: { source: 'sdk', ...(result.sessionId ? { sdkSessionId: result.sessionId } : {}) },
+        },
+      })
+      sendEvent('done', { messageId: sessionId })
+    } else {
+      // ── Legacy path (Gemini / InferenceEngine) ──────────────────
+      const ariaResponse = await aria.handleTextMessage(
+        sessionId,
+        req.userId!,
+        content,
+        imageBase64,
+        session.clientId,
+        priorMessages,
+        (event) => sendEvent(event.type, event)
+      )
 
-    sendEvent('done', { messageId: sessionId })
+      for (const conflict of ariaResponse.conflictsFound) {
+        sendEvent('conflict_warning', { conflict })
+      }
+
+      sendEvent('token', { content: ariaResponse.content })
+
+      if (ariaResponse.citations.length > 0) {
+        sendEvent('sources', { citations: ariaResponse.citations })
+      }
+
+      await prisma.message.create({
+        data: {
+          sessionId,
+          role: 'ASSISTANT',
+          content: ariaResponse.content,
+          mode: 'intake',
+          metadata: JSON.parse(JSON.stringify({
+            toolsUsed:   ariaResponse.toolsUsed,
+            citations:   ariaResponse.citations,
+            delegations: ariaResponse.delegations,
+            reasoning:   ariaResponse.reasoning,
+          })),
+        },
+      })
+
+      sendEvent('done', { messageId: sessionId })
+    }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     sendEvent('done', { error: errorMsg })
