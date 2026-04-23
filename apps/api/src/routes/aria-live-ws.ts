@@ -16,13 +16,14 @@ import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
 import { google as goog } from '@axis/tools'
+import { getParser } from '@axis/ingestion'
 
 const GEMINI_WS_URL =
   'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
 
-// Gemini Live sessions have a hard 15-minute limit. We rotate at 14 min so the
-// client can reconnect with fresh context before Gemini closes the session.
-const SESSION_ROTATION_MS = 14 * 60_000
+// Gemini Live connections have a ~10-minute lifetime. We rotate at 9 min so the
+// client can reconnect with fresh context before Gemini closes the connection.
+const SESSION_ROTATION_MS = 9 * 60_000
 
 // Silence injection: send 100 ms of 16 kHz PCM silence to Gemini every
 // SILENCE_CHECK_INTERVAL ms when no client audio has arrived for SILENCE_INJECT_AFTER_MS.
@@ -254,6 +255,21 @@ async function getGoogleAccessToken(
   )
 }
 
+// ─── Cookie header parser ─────────────────────────────────────────────────────
+
+function parseCookieHeader(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!header) return out
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 1) continue
+    const key = part.slice(0, eq).trim()
+    const val = part.slice(eq + 1).trim()
+    try { out[key] = decodeURIComponent(val) } catch { out[key] = val }
+  }
+  return out
+}
+
 // ─── JWT verification ─────────────────────────────────────────────────────────
 
 function extractUserId(token: string): string | null {
@@ -282,12 +298,14 @@ export async function handleAriaLiveWs(
   // Parse URL params from the upgrade request
   const url = new URL(request.url ?? '/', `http://localhost`)
   const sessionId = url.searchParams.get('sessionId')
-  const token = url.searchParams.get('token')
+  // Accept token from query param (legacy) OR from httpOnly cookie (new auth)
+  const cookies = parseCookieHeader(request.headers.cookie)
+  const token = url.searchParams.get('token') ?? cookies['axis_token']
   // reconnect=true signals that prior conversation context should be loaded
   const isReconnect = url.searchParams.get('reconnect') === 'true'
 
   if (!sessionId || !token) {
-    clientWs.close(4001, 'Missing sessionId or token')
+    clientWs.close(4001, 'Missing sessionId or auth token')
     return
   }
 
@@ -313,13 +331,15 @@ export async function handleAriaLiveWs(
     return
   }
 
-  // Look up user name for the system instruction
+  // Look up user name and voice preference for the system instruction
   let userName: string | null = null
+  let voiceName = 'Aoede' // default
   try {
-    const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } })
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { name: true, voiceName: true } })
     userName = user?.name ?? null
+    voiceName = user?.voiceName ?? 'Aoede'
   } catch {
-    // Non-critical — Aria still works without the name
+    // Non-critical — Aria still works without the name / falls back to default voice
   }
 
   // Build Aria's system instruction (memory + RAG + user identity)
@@ -416,10 +436,11 @@ export async function handleAriaLiveWs(
       setup: {
         model: `models/${config.model}`,
         generationConfig: {
-          responseModalities: ['AUDIO'],
+          responseModalities: ['audio'],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName } },
           },
+          thinkingConfig: { thinkingLevel: 'minimal' },
         },
         systemInstruction: {
           // Inject conversation history so Gemini has context from the start,
@@ -450,6 +471,7 @@ export async function handleAriaLiveWs(
     if ('setupComplete' in data) {
       clearTimeout(geminiSetupTimer)
       geminiReady = true
+      console.info(`[AriaLiveWS] Gemini ready — session=${sessionId} voice=${voiceName} model=${config.model}`)
       sendToClient({ type: 'ready' })
 
       // ── Silence injector ────────────────────────────────────────────────
@@ -467,7 +489,7 @@ export async function handleAriaLiveWs(
       // Gemini Live sessions hard-expire at 15 min. Warn the client at 14 min
       // so it can reconnect gracefully (with history) before Gemini cuts us off.
       sessionRotationTimer = setTimeout(() => {
-        console.log('[AriaLiveWS] 14-min limit approaching — triggering session rotation')
+        console.log('[AriaLiveWS] 9-min limit approaching — triggering session rotation')
         sendToClient({ type: 'session_rotate' })
         // Give the client 5 s to acknowledge and reconnect before we close.
         setTimeout(() => {
@@ -512,6 +534,10 @@ export async function handleAriaLiveWs(
               setTimeout(() => reject(new Error(`Tool "${name}" timed out after 30 s`)), TOOL_TIMEOUT_MS)
             )
 
+            const AGENT_DISPLAY: Record<string, string> = {
+              product: 'Sean', competitive: 'Mel', process: 'Kevin', stakeholder: 'Anjie',
+            }
+
             let result: unknown
             try {
               const exec: Promise<unknown> =
@@ -519,20 +545,55 @@ export async function handleAriaLiveWs(
                   ? (async () => {
                       const workerType = args['workerType'] as 'product' | 'process' | 'competitive' | 'stakeholder'
                       const query = args['query'] as string
-                      const delegationContext = {
-                        sessionId,
-                        clientId: session.clientId,
-                        userId,
-                        assembledContext: '',
-                        ragResult: null as never,
-                        stakeholders: [],
-                        clientRecord: null,
-                      }
-                      const agentResult = await aria.delegate(workerType, query, delegationContext)
+                      const agentName = AGENT_DISPLAY[workerType] ?? workerType
+
+                      // Fire real delegation in background — we respond to Gemini immediately
+                      // so the voice session doesn't go silent for 5-30 s while agents work.
+                      void (async () => {
+                        const delegationContext = {
+                          sessionId,
+                          clientId: session.clientId,
+                          userId,
+                          assembledContext: '',
+                          ragResult: null as never,
+                          stakeholders: [],
+                          clientRecord: null,
+                        }
+                        try {
+                          const agentResult = await aria.delegate(workerType, query, delegationContext)
+                          // Inject result as a new user turn so Gemini narrates it naturally
+                          if (geminiWs.readyState === WebSocket.OPEN) {
+                            geminiWs.send(JSON.stringify({
+                              clientContent: {
+                                turns: [{
+                                  role: 'user',
+                                  parts: [{ text: `${agentName} has completed the analysis. Results:\n\n${agentResult.content.slice(0, 3000)}\n\nPlease summarise the key findings for me concisely.` }],
+                                }],
+                                turnComplete: true,
+                              },
+                            }))
+                          }
+                        } catch (bgErr) {
+                          const msg = bgErr instanceof Error ? bgErr.message : 'Unknown error'
+                          if (geminiWs.readyState === WebSocket.OPEN) {
+                            geminiWs.send(JSON.stringify({
+                              clientContent: {
+                                turns: [{
+                                  role: 'user',
+                                  parts: [{ text: `${agentName} encountered an issue: ${msg}. Please let the user know.` }],
+                                }],
+                                turnComplete: true,
+                              },
+                            }))
+                          }
+                        }
+                      })()
+
+                      // Immediate toolResponse — Gemini speaks a bridge phrase without waiting
                       return {
-                        status: 'completed',
-                        agent: workerType,
-                        summary: agentResult.content.slice(0, 1000),
+                        status: 'delegating',
+                        agent: agentName,
+                        message: `${agentName} is now working on this. I'll share the results as soon as they're ready — usually about a minute.`,
                       }
                     })()
                   : name === 'search_gmail'
@@ -561,8 +622,28 @@ export async function handleAriaLiveWs(
                   : name === 'read_drive_document'
                   ? (async () => {
                       const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
-                      const buf = await goog.downloadFile(token, args['fileId'] as string, 'text/plain')
-                      return { content: buf.toString('utf8').slice(0, 10_000) }
+                      const fileId = args['fileId'] as string
+                      // Fetch actual MIME type first — downloadFile uses it to pick the
+                      // correct API path (export endpoint for Google Workspace files,
+                      // binary ?alt=media for everything else).
+                      const metadata = await goog.getFileMetadata(token, fileId)
+                      // downloadFileAuto picks the best download method per MIME type and
+                      // returns the actual contentType of the bytes (e.g. Slides → tries
+                      // PPTX export, falls back to Slides API plain text if too large).
+                      const { content: buf, contentType } = await goog.downloadFileAuto(token, fileId, metadata.mimeType)
+
+                      const parser = getParser(contentType)
+                      if (parser) {
+                        const parsed = await parser.parse(buf, metadata.name)
+                        return {
+                          content: parsed.text.slice(0, 10_000),
+                          name: metadata.name,
+                          sections: parsed.sections.length,
+                          wordCount: parsed.metadata.wordCount,
+                        }
+                      }
+
+                      return { content: buf.toString('utf8').slice(0, 10_000), name: metadata.name }
                     })()
                   : name === 'book_meeting'
                   ? (async () => {
@@ -648,35 +729,74 @@ export async function handleAriaLiveWs(
       }
     }
 
+    // ── Log first meaningful Gemini response for debugging ───────────────
+    {
+      const sc = data['serverContent'] as Record<string, unknown> | undefined
+      if (sc) {
+        const hasAudio    = !!(sc['modelTurn'] as Record<string, unknown> | undefined)?.['parts']
+        const hasTurnEnd  = !!sc['turnComplete']
+        const hasTranscript = !!(sc['inputTranscription'] as Record<string, unknown> | undefined)?.['text']
+        if (hasAudio || hasTurnEnd || hasTranscript) {
+          console.info(`[AriaLiveWS] Gemini response — transcript=${hasTranscript} audio=${hasAudio} turnComplete=${hasTurnEnd}`)
+        }
+      }
+    }
+
     // ── Persist voice transcript ──────────────────────────────────────────
     // Save user speech transcripts and Aria text responses so they survive
     // reconnects and appear in the session history on the dashboard.
     const serverContent = data['serverContent'] as Record<string, unknown> | undefined
     if (serverContent) {
-      const inputTranscript = serverContent['inputTranscript'] as string | undefined
-      if (inputTranscript?.trim()) {
+      const inputTranscription = serverContent['inputTranscription'] as Record<string, unknown> | undefined
+      const inputText = inputTranscription?.['text'] as string | undefined
+      if (inputText?.trim()) {
         void prisma.message.create({
-          data: { sessionId, role: 'USER', content: inputTranscript.trim(), mode: 'voice', metadata: {} },
+          data: { sessionId, role: 'USER', content: inputText.trim(), mode: 'voice', metadata: {} },
         }).catch(() => { /* non-critical */ })
       }
 
-      const modelTurn = serverContent['modelTurn'] as Record<string, unknown> | undefined
-      const parts = modelTurn?.['parts'] as Array<Record<string, unknown>> | undefined
-      if (parts) {
-        const textParts = parts
-          .filter((p) => typeof p['text'] === 'string' && (p['text'] as string).trim())
-          .map((p) => p['text'] as string)
-        if (textParts.length > 0) {
-          void prisma.message.create({
-            data: { sessionId, role: 'ASSISTANT', content: textParts.join(''), mode: 'voice', metadata: {} },
-          }).catch(() => { /* non-critical */ })
+      const outputTranscription = serverContent['outputTranscription'] as Record<string, unknown> | undefined
+      const outputText = outputTranscription?.['text'] as string | undefined
+      if (outputText?.trim()) {
+        void prisma.message.create({
+          data: { sessionId, role: 'ASSISTANT', content: outputText.trim(), mode: 'voice', metadata: {} },
+        }).catch(() => { /* non-critical */ })
+      }
+    }
+
+    // ── Strip thinking tokens before relaying to client ──────────────────
+    // Gemini 2.5 Flash emits internal reasoning as parts with thought:true.
+    // These must never reach the client — they'd be read aloud in voice mode.
+    let outbuf = buf
+    const serverContentRelay = data['serverContent'] as Record<string, unknown> | undefined
+    if (serverContentRelay) {
+      const modelTurnRelay = serverContentRelay['modelTurn'] as Record<string, unknown> | undefined
+      if (modelTurnRelay) {
+        const partsRelay = modelTurnRelay['parts'] as Array<Record<string, unknown>> | undefined
+        if (partsRelay) {
+          const realParts = partsRelay.filter((p) => !p['thought'])
+          if (realParts.length === 0 && partsRelay.length > 0) {
+            // Message contains only thinking tokens — drop it entirely
+            return
+          }
+          if (realParts.length !== partsRelay.length) {
+            // Mix of real and thinking parts — rebuild without the thinking ones
+            const filtered = {
+              ...data,
+              serverContent: {
+                ...serverContentRelay,
+                modelTurn: { ...modelTurnRelay, parts: realParts },
+              },
+            }
+            outbuf = Buffer.from(JSON.stringify(filtered))
+          }
         }
       }
     }
 
     // ── All other Gemini messages → relay to client ───────────────────────
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(buf)
+      clientWs.send(outbuf)
     }
     } catch (err) {
       console.error('[AriaLiveWS] Unhandled error in Gemini message handler:', err instanceof Error ? err.message : err)
@@ -685,19 +805,24 @@ export async function handleAriaLiveWs(
 
   geminiWs.on('error', (err) => {
     teardownTimers()
-    console.error('[AriaLiveWS] Gemini error:', err.message)
-    sendToClient({ type: 'error', message: 'Gemini connection error' })
+    const msg = err.message || 'Gemini connection error'
+    console.error('[AriaLiveWS] Gemini error:', msg)
+    sendToClient({ type: 'error', message: msg })
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.close(1011, 'Gemini error')
+      clientWs.close(1011, msg.slice(0, 123))
     }
   })
 
   geminiWs.on('close', (code, reason) => {
     teardownTimers()
     const reasonStr = reason?.toString() ?? ''
-    console.log(`[AriaLiveWS] Gemini closed — code=${code} reason="${reasonStr}"`)
+    console.error(`[AriaLiveWS] Gemini closed — code=${code} reason="${reasonStr}"`)
+    const clientMsg = reasonStr
+      ? `Gemini closed: ${reasonStr} (${code})`
+      : `Gemini disconnected (code ${code})`
+    sendToClient({ type: 'error', message: clientMsg })
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.close(1011, 'Gemini connection closed')
+      clientWs.close(1011, clientMsg.slice(0, 123))
     }
   })
 
@@ -745,6 +870,8 @@ export async function handleAriaLiveWs(
     if (geminiWs.readyState === WebSocket.OPEN || geminiWs.readyState === WebSocket.CONNECTING) {
       geminiWs.close(1000)
     }
+    // Log disconnect — history is always loaded on reconnect via historyContext
+    console.info(`[AriaLiveWS] Client disconnected — session=${sessionId}`)
   })
 
   clientWs.on('error', (err) => {
