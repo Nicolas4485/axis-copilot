@@ -486,7 +486,7 @@ export class Aria {
       }
       if (_prismaRef) {
         await _prismaRef.message.create({
-          data: { sessionId, role: 'ASSISTANT', content: result.content, mode: 'intake', metadata: { agent: workerName.toLowerCase(), agentType: 'specialist', workerType, toolsUsed: result.toolsUsed } },
+          data: { sessionId, role: 'ASSISTANT', content: result.content, mode: 'intake', metadata: { agent: workerName.toLowerCase(), agentType: 'specialist', workerType, toolsUsed: result.toolsUsed, isPartial: result.isPartial ?? false } },
         })
         console.log(`[Specialist:${workerName}] ✓ output saved to session ${sessionId} (${result.content.length} chars)`)
       }
@@ -573,7 +573,7 @@ export class Aria {
       : `Message to classify: "${message.slice(0, 300)}"`
     try {
       const response = await this.gemini.generateContent(
-        `Classify the new message as exactly one of: conversational, retrieval, or analytical.\n\nconversational = about what was already discussed/done in this conversation, clarifications, follow-ups, "what did X do?"\nretrieval = needs searching documents/emails/Drive/knowledge base for NEW information\nanalytical = needs specialist agents (Sean/Kevin/Mel/Anjie)\n\nReply with ONLY the single classification word.`,
+        `Classify the new message as exactly one of: conversational, retrieval, or analytical.\n\nconversational = about what was already discussed/done in this conversation, including: clarifications, follow-ups, corrections about a specialist result ("why did you do X?", "that's wrong", "what did Sean say?"), questions addressed to a named specialist about work they already produced\nretrieval = needs searching documents/emails/Drive/knowledge base for NEW information\nanalytical = needs specialist agents (Sean/Kevin/Mel/Anjie) to run a NEW analysis\n\nIMPORTANT: If the message is a reaction to, correction of, or question about a specialist result already produced in this conversation — classify as conversational, NOT analytical. Do NOT re-fire specialists for follow-up questions about existing work.\n\nReply with ONLY the single classification word.`,
         [{ role: 'user', content: prompt }],
       )
       const text =

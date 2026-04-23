@@ -23,9 +23,9 @@ import type {
 
 const MAX_ITERATIONS      = 6   // Cap tool-use iterations per synthesis step
 const MAX_REFLECT_CYCLES  = 2
+const MAX_TOTAL_TOOL_CALLS = 20  // Hard cap across ALL iterations — prevents 39-tool spirals
 // Hard wall-clock limit for the synthesis tool loop.
 // Specialists run multiple tool calls so this needs headroom beyond Aria's loop.
-// Mel (competitive) can run 15+ web searches — 240s gives enough room.
 const AGENT_LOOP_TIMEOUT_MS = 240_000
 
 /**
@@ -109,6 +109,7 @@ export class BaseAgent {
 
       // ── 3+4. Retrieve → reflect loop (max 2 cycles) ────────────────────────
       let allEvidence: RetrievedEvidence[] = []
+      let lowScoreCycles = 0
 
       for (let cycle = 0; cycle < MAX_REFLECT_CYCLES; cycle++) {
         retrievalCycles++
@@ -123,6 +124,20 @@ export class BaseAgent {
         if (reflection.sufficient) {
           console.log(`[AgentTrace] sufficient=true at cycle ${cycle + 1} — proceeding to synthesis`)
           break
+        }
+
+        // Early exit: if all snippets scored < 0.1 two cycles in a row, the content
+        // simply doesn't exist in the knowledge base (e.g. un-ingested binary file).
+        const allLow = reflection.snippetScores.length === 0 ||
+          reflection.snippetScores.every((s) => s.score < 0.1)
+        if (allLow) {
+          lowScoreCycles++
+          if (lowScoreCycles >= 2) {
+            console.log(`[AgentTrace] content_unavailable — all snippets scored < 0.1 for ${lowScoreCycles} cycles, stopping early`)
+            break
+          }
+        } else {
+          lowScoreCycles = 0
         }
 
         if (cycle < MAX_REFLECT_CYCLES - 1) {
@@ -155,18 +170,40 @@ export class BaseAgent {
     let finalTextContent = ''
     let reasoning        = ''
     const loopStartMs    = Date.now()
+    let totalToolCallCount = 0
+    let isPartial = false
+
+    // Track consecutive search_knowledge_base failures so we can short-circuit
+    // if the knowledge base is unavailable and the model keeps retrying.
+    const KB_TOOL_NAME                    = 'search_knowledge_base'
+    const KB_UNAVAILABLE_NOTICE           = '[SYSTEM NOTICE: The knowledge base is currently unavailable — all document search attempts failed. You MUST NOT generate analysis, figures, or conclusions from your training data. Tell the user clearly that you cannot access their documents right now and ask them to try again in a moment.]'
+    const KB_UNAVAILABLE_USER_MESSAGE     = 'I cannot access your documents right now — the knowledge base is unavailable. Please try again in a moment. I will not generate analysis from memory, as that could produce fabricated figures or conclusions.'
+    let kbUnavailable                     = false
+    let consecutiveKbFailures             = 0
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       if (Date.now() - loopStartMs > AGENT_LOOP_TIMEOUT_MS) {
         console.warn(`[Agent] Loop timeout after ${AGENT_LOOP_TIMEOUT_MS / 1000}s at iteration ${iteration} — returning partial result`)
-        finalTextContent = finalTextContent || 'Analysis timed out — the request is taking too long. Please try again.'
+        isPartial = true
+        if (finalTextContent) {
+          finalTextContent = `[PARTIAL RESULT — analysis exceeded the time limit]\n\n${finalTextContent}`
+        } else {
+          finalTextContent = 'Analysis timed out before producing results. The query may be too broad — try narrowing it to one specific area (e.g. "just the competitive landscape" or "just pricing strategy").'
+        }
         break
+      }
+
+      // Once the total tool budget is exhausted, pass no tools — forces the model
+      // to synthesise a final answer from accumulated evidence rather than keep searching.
+      const budgetExhausted = totalToolCallCount >= MAX_TOTAL_TOOL_CALLS
+      if (budgetExhausted) {
+        console.warn(`[Agent] Tool budget exhausted (${totalToolCallCount}/${MAX_TOTAL_TOOL_CALLS}) — forcing final synthesis at iteration ${iteration}`)
       }
 
       const response = await this.engine.route('agent_response', {
         systemPromptKey: this.config.systemPromptKey,
         messages,
-        tools: toolDefinitions,
+        tools: budgetExhausted ? [] : toolDefinitions,
         sessionId: context.sessionId,
         userId:    context.userId,
       })
@@ -189,7 +226,20 @@ export class BaseAgent {
         break
       }
 
+      totalToolCallCount += toolUseBlocks.length
+
+      // Short-circuit: KB has already been flagged unavailable and the model is
+      // still trying to search it. Refuse to loop further and return the safe
+      // unavailability message rather than letting the model fabricate output.
+      if (kbUnavailable && toolUseBlocks.some((tu) => tu.name === KB_TOOL_NAME)) {
+        console.warn(`[Agent] Knowledge base unavailable and model re-attempted ${KB_TOOL_NAME} — short-circuiting loop at iteration ${iteration}`)
+        finalTextContent = KB_UNAVAILABLE_USER_MESSAGE
+        break
+      }
+
       const toolResultContent: InferenceContentBlock[] = []
+      let kbFailedThisIteration = false
+      let kbCalledThisIteration = false
 
       for (const toolUse of toolUseBlocks) {
         toolsUsed.push(toolUse.name)
@@ -207,6 +257,13 @@ export class BaseAgent {
           toolContext
         )
 
+        if (toolUse.name === KB_TOOL_NAME) {
+          kbCalledThisIteration = true
+          if (!result.success) {
+            kbFailedThisIteration = true
+          }
+        }
+
         toolResultContent.push({
           type:        'tool_result' as const,
           tool_use_id: toolUse.id,
@@ -214,7 +271,33 @@ export class BaseAgent {
         })
       }
 
+      // Track consecutive KB failures. Reset the counter on any successful KB call.
+      if (kbCalledThisIteration && kbFailedThisIteration) {
+        consecutiveKbFailures++
+      } else if (kbCalledThisIteration && !kbFailedThisIteration) {
+        consecutiveKbFailures = 0
+      }
+
+      // If KB failed this iteration, append a hard-stop notice so the model
+      // cannot silently fall back to training-data hallucinations.
+      if (kbFailedThisIteration) {
+        kbUnavailable = true
+        toolResultContent.push({
+          type: 'text' as const,
+          text: KB_UNAVAILABLE_NOTICE,
+        })
+        console.warn(`[Agent] ${KB_TOOL_NAME} failed at iteration ${iteration} (consecutive failures: ${consecutiveKbFailures}) — appended unavailability notice`)
+      }
+
       messages.push({ role: 'user', content: toolResultContent })
+
+      // After 2 consecutive KB failures, break early with the safe message
+      // rather than letting the model loop forever against a dead KB.
+      if (consecutiveKbFailures >= 2) {
+        console.warn(`[Agent] ${KB_TOOL_NAME} failed ${consecutiveKbFailures} consecutive times — breaking loop early with unavailability message`)
+        finalTextContent = KB_UNAVAILABLE_USER_MESSAGE
+        break
+      }
 
       if (textBlocks.length > 0) {
         reasoning += textBlocks.join('\n') + '\n'
@@ -246,6 +329,7 @@ export class BaseAgent {
       memoryUpdates,
       citations,
       conflictsFound,
+      isPartial,
       trace,
     }
   }
@@ -297,7 +381,7 @@ export class BaseAgent {
           role: 'user',
           content: `User query: ${userMessage}`,
         }],
-        maxTokens: 400,
+        maxTokens: 800,
       })
 
       const text = extractJSON(
@@ -448,7 +532,7 @@ export class BaseAgent {
           role: 'user',
           content: `User question: ${userMessage}\n\nRetrieved evidence:\n${evidenceSummary}${critiqueNote}`,
         }],
-        maxTokens: 600,
+        maxTokens: 800,
       })
 
       const text = extractJSON(
@@ -506,7 +590,7 @@ export class BaseAgent {
           role: 'user',
           content: `Original query: ${userMessage}\nInformation gaps identified: ${gapText}\nGenerate up to 2 sub-questions specifically targeting these gaps.`,
         }],
-        maxTokens: 300,
+        maxTokens: 600,
       })
 
       const text = extractJSON(

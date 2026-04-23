@@ -245,7 +245,7 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
         waitForAgents: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional. Tool names of OTHER specialists being called in this SAME request whose output should be injected into Sean\'s context BEFORE he starts. Example: if you are also calling delegate_competitive_analysis, set waitForAgents: ["delegate_competitive_analysis"] so Sean\'s product strategy is grounded in Mel\'s competitive findings. Only reference tools you are calling right now.',
+          description: 'Set this when Sean\'s task genuinely requires competitive grounding. Decision rule: if you are ALSO calling delegate_competitive_analysis in this same request AND Sean\'s output depends on knowing the competitive landscape (e.g. product strategy, feature positioning, differentiation) — set waitForAgents: ["delegate_competitive_analysis"] so Sean receives Mel\'s findings before starting. For standalone product questions (architecture, user stories, backlog prioritisation, UX review) with no competitive framing — omit this field and let Sean run in parallel. Only reference tools you are actually calling right now.',
         },
       },
       required: ['query'],

@@ -9,6 +9,7 @@ export type SystemPromptKey =
   | 'AGENT_PROCESS'
   | 'AGENT_COMPETITIVE'
   | 'AGENT_STAKEHOLDER'
+  | 'AGENT_DUE_DILIGENCE'
 
 /** Memory types an agent can read/write */
 export type MemoryType = 'EPISODIC' | 'SEMANTIC' | 'PROCEDURAL'
@@ -90,6 +91,8 @@ export interface AgentResponse {
   citations: Citation[]
   conflictsFound: ConflictFound[]
   suggestedNextAgent?: SystemPromptKey | undefined
+  /** True when the loop timed out before producing a complete result */
+  isPartial?: boolean | undefined
   /** Execution trace for observability / future debug panel */
   trace?: AgentTrace | undefined
 }
