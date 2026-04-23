@@ -5,6 +5,7 @@ export interface ToolContext {
   sessionId: string
   userId: string
   clientId: string | null
+  clientName?: string | null
   requestId: string
 }
 

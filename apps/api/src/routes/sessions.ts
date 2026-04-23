@@ -4,10 +4,9 @@ import { messagesRateLimit } from '../middleware/auth.js'
 import { prisma } from '../lib/prisma.js'
 import { createSessionSchema, sendMessageSchema } from '../lib/schemas.js'
 import { Aria } from '@axis/agents'
-import { InferenceEngine } from '@axis/inference'
+import { sharedEngine } from '../lib/inference.js'
 
-const engine = new InferenceEngine()
-const aria = new Aria({ engine, prisma })
+const aria = new Aria({ engine: sharedEngine, prisma })
 
 export const sessionsRouter = Router()
 
@@ -130,6 +129,32 @@ sessionsRouter.get('/:id', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /api/sessions/:id/messages — Return all messages for a session in chronological order
+ */
+sessionsRouter.get('/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const id = req.params['id']
+    if (!id) { res.status(400).json({ error: 'Session ID required', code: 'MISSING_ID', requestId: req.requestId }); return }
+
+    const session = await prisma.session.findFirst({ where: { id, userId: req.userId! }, select: { id: true } })
+    if (!session) {
+      res.status(404).json({ error: 'Session not found', code: 'NOT_FOUND', requestId: req.requestId })
+      return
+    }
+
+    const messages = await prisma.message.findMany({
+      where: { sessionId: id },
+      orderBy: { createdAt: 'asc' },
+    })
+
+    res.json({ messages, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to fetch messages', code: 'MESSAGES_FETCH_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
  * POST /api/sessions/:id/messages — SSE streaming response
  *
  * Events: tool_start, tool_result, token, conflict_warning, sources, done
@@ -217,37 +242,24 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
   }
 
   try {
-    // Run orchestrator
+    // Run Aria with real-time progress events (tool calls, RAG, delegations stream as they happen)
     const agentResponse = await aria.handleTextMessage(
       sessionId,
       req.userId!,
       content,
       imageBase64,
       session.clientId,
-      priorMessages
+      priorMessages,
+      (event) => sendEvent(event.type, event)
     )
-
-    // Emit tool events
-    for (const tool of agentResponse.toolsUsed) {
-      sendEvent('tool_start', { tool })
-      sendEvent('tool_result', { tool, status: 'completed' })
-    }
-
-    // Emit delegation events
-    if ('delegations' in agentResponse) {
-      for (const delegation of (agentResponse as { delegations: Array<{ workerType: string; query: string }> }).delegations) {
-        sendEvent('delegation', { workerType: delegation.workerType, query: delegation.query })
-      }
-    }
 
     // Emit conflict warnings
     for (const conflict of agentResponse.conflictsFound) {
       sendEvent('conflict_warning', { conflict })
     }
 
-    // Emit token event with full content
+    // Emit the final response token
     console.log('[SSE] Agent response content length:', agentResponse.content.length)
-    console.log('[SSE] Agent response content preview:', agentResponse.content.slice(0, 200))
     sendEvent('token', { content: agentResponse.content })
 
     // Emit sources
@@ -291,7 +303,7 @@ sessionsRouter.get('/:id/cost', async (req: Request, res: Response) => {
       return
     }
 
-    const costTracker = engine.getCostTracker()
+    const costTracker = sharedEngine.getCostTracker()
     const summary = await costTracker.getSessionCost(sessionId)
 
     res.json({ ...summary, requestId: req.requestId })
@@ -316,7 +328,7 @@ sessionsRouter.post('/:id/distribute', async (req: Request, res: Response) => {
     const sessionId = req.params['id']
     const { stakeholderIds, format, subject } = parsed.data
 
-    // TODO: Look up stakeholder emails, generate formatted content, send via Gmail/GDocs
+    // KNOWN GAP: stub implementation — stakeholder lookup, content generation, and Gmail/GDocs delivery not yet implemented
     res.json({
       sessionId,
       distributed: true,

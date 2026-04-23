@@ -159,6 +159,7 @@ integrationsRouter.post('/google/drive-webhook', async (req: Request, res: Respo
       }
     }
 
+    // KNOWN GAP: handleNotification receives Drive push events but does not trigger actual file ingestion
     const result = await webhookHandler.handleNotification(
       {
         channelId,
@@ -176,6 +177,30 @@ integrationsRouter.post('/google/drive-webhook', async (req: Request, res: Respo
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     console.error(`[Webhook] Error: ${errorMsg}`)
     res.status(200).json({ action: 'error', error: errorMsg })
+  }
+})
+
+/**
+ * DELETE /api/integrations/google/:provider — Disconnect an integration
+ * Removes the stored OAuth tokens from the database.
+ */
+integrationsRouter.delete('/google/:provider', authenticate, async (req: Request, res: Response) => {
+  const validProviders = ['GOOGLE_DRIVE', 'GMAIL', 'GOOGLE_DOCS', 'GOOGLE_SHEETS']
+  const provider = req.params['provider']
+
+  if (!provider || !validProviders.includes(provider)) {
+    res.status(400).json({ error: 'Invalid provider', code: 'VALIDATION_ERROR', requestId: req.requestId })
+    return
+  }
+
+  try {
+    await prisma.integration.deleteMany({
+      where: { userId: req.userId!, provider: provider as 'GOOGLE_DRIVE' | 'GMAIL' | 'GOOGLE_DOCS' | 'GOOGLE_SHEETS' },
+    })
+    res.json({ disconnected: true, provider, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to disconnect', code: 'DISCONNECT_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
 

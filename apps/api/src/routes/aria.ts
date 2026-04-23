@@ -216,14 +216,16 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
 
   const { content, imageBase64 } = parsed.data
 
-  // Verify session
+  // Verify session — include client name for context injection
   const session = await prisma.session.findFirst({
     where: { id: sessionId, userId: req.userId! },
+    include: { client: { select: { name: true } } },
   })
   if (!session) {
     res.status(404).json({ error: 'Session not found', code: 'NOT_FOUND', requestId: req.requestId })
     return
   }
+  const clientName = session.client?.name ?? null
 
   // Store user message
   await prisma.message.create({
@@ -262,9 +264,10 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
       // ── SDK path (Claude Agent SDK) ─────────────────────────────
       const context = {
         sessionId,
-        userId:    req.userId!,
-        clientId:  session.clientId ?? null,
-        requestId: req.requestId ?? '',
+        userId:     req.userId!,
+        clientId:   session.clientId ?? null,
+        clientName: clientName,
+        requestId:  req.requestId ?? '',
       }
       const result = await getSdkAgent().handleMessage(
         content,
@@ -291,7 +294,8 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
         imageBase64,
         session.clientId,
         priorMessages,
-        (event) => sendEvent(event.type, event)
+        (event) => sendEvent(event.type, event),
+        clientName
       )
 
       for (const conflict of ariaResponse.conflictsFound) {

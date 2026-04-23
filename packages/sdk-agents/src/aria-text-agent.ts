@@ -61,8 +61,12 @@ export class AriaTextAgent {
     let totalCostUsd = 0
     const contentParts: string[] = []
 
+    const clientLine = context.clientName
+      ? `\n\n## Current Client\nThis session is scoped to client: **${context.clientName}**. Frame all analysis, recommendations, and responses in the context of this client's situation. Knowledge base results retrieved during this session belong to ${context.clientName} — treat them as the primary source of truth.`
+      : ''
+
     const options = {
-      systemPrompt: SDK_SYSTEM_PROMPT,
+      systemPrompt: SDK_SYSTEM_PROMPT + clientLine,
       mcpServers: { [MCP_SERVER_NAME]: bridge } as Record<string, typeof bridge>,
       agents: buildSpecialistDefinitions(),
       tools: [] as string[],
