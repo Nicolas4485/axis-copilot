@@ -4,6 +4,7 @@
 import type { ToolFunction, ToolDefinition, ToolContext, ToolResult } from '@axis/tools'
 import {
   webSearch, webSearchDefinition,
+  perplexitySearch, perplexitySearchDefinition,
   saveClientContext, saveClientContextDefinition,
   searchKnowledgeBase, searchKnowledgeBaseDefinition,
   getGraphContext, getGraphContextDefinition,
@@ -20,6 +21,7 @@ import {
   draftEmail, draftEmailDefinition,
   updateStakeholderInfluence, updateStakeholderInfluenceDefinition,
   flagForReview, flagForReviewDefinition,
+  storeCorrection, storeCorrectionDefinition,
   ingestDocument, ingestDocumentDefinition,
   analyzeImage, analyzeImageDefinition,
   scheduleAriaMeeting, scheduleAriaMeetingDefinition,
@@ -27,13 +29,25 @@ import {
   githubCreateBranch, githubCreateBranchDefinition,
   githubWriteFile, githubWriteFileDefinition,
   githubCreatePR, githubCreatePRDefinition,
+  githubListRepos, githubListReposDefinition,
+  githubListFiles, githubListFilesDefinition,
+  githubSearchCode, githubSearchCodeDefinition,
   searchGmail, searchGmailDefinition,
   readEmail, readEmailDefinition,
   searchGoogleDrive, searchGoogleDriveDefinition,
   readDriveDocument, readDriveDocumentDefinition,
   bookMeeting, bookMeetingDefinition,
   createTask, createTaskDefinition,
+  listDeals, listDealsDefinition,
+  createDeal, createDealDefinition,
+  getDealStatus, getDealStatusDefinition,
+  moveDealStage, moveDealStageDefinition,
 } from '@axis/tools'
+// PE tools that need CimAnalyst/MemoWriter live here to avoid circular deps
+import {
+  runCimAnalysis, runCimAnalysisDefinition,
+  generateIcMemo, generateIcMemoDefinition,
+} from './pe-tools.js'
 
 interface ToolEntry {
   definition: ToolDefinition
@@ -43,6 +57,7 @@ interface ToolEntry {
 /** Central registry of all available tools */
 const TOOL_MAP: Record<string, ToolEntry> = {
   web_search: { definition: webSearchDefinition, execute: webSearch },
+  perplexity_search: { definition: perplexitySearchDefinition, execute: perplexitySearch },
   save_client_context: { definition: saveClientContextDefinition, execute: saveClientContext },
   search_knowledge_base: { definition: searchKnowledgeBaseDefinition, execute: searchKnowledgeBase },
   get_graph_context: { definition: getGraphContextDefinition, execute: getGraphContext },
@@ -59,6 +74,7 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   draft_email: { definition: draftEmailDefinition, execute: draftEmail },
   update_stakeholder_influence: { definition: updateStakeholderInfluenceDefinition, execute: updateStakeholderInfluence },
   flag_for_review: { definition: flagForReviewDefinition, execute: flagForReview },
+  store_correction: { definition: storeCorrectionDefinition, execute: storeCorrection },
   ingest_document: { definition: ingestDocumentDefinition, execute: ingestDocument },
   analyze_image: { definition: analyzeImageDefinition, execute: analyzeImage },
   schedule_aria_meeting: { definition: scheduleAriaMeetingDefinition, execute: scheduleAriaMeeting },
@@ -66,6 +82,9 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   github_create_branch: { definition: githubCreateBranchDefinition, execute: githubCreateBranch },
   github_write_file: { definition: githubWriteFileDefinition, execute: githubWriteFile },
   github_create_pr: { definition: githubCreatePRDefinition, execute: githubCreatePR },
+  github_list_repos: { definition: githubListReposDefinition, execute: githubListRepos },
+  github_list_files: { definition: githubListFilesDefinition, execute: githubListFiles },
+  github_search_code: { definition: githubSearchCodeDefinition, execute: githubSearchCode },
   // Google tools — available in text-mode agentic loop
   search_gmail: { definition: searchGmailDefinition, execute: searchGmail },
   read_email: { definition: readEmailDefinition, execute: readEmail },
@@ -73,6 +92,13 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   read_drive_document: { definition: readDriveDocumentDefinition, execute: readDriveDocument },
   book_meeting: { definition: bookMeetingDefinition, execute: bookMeeting },
   create_task: { definition: createTaskDefinition, execute: createTask },
+  // PE Deal pipeline tools
+  list_deals: { definition: listDealsDefinition, execute: listDeals },
+  create_deal: { definition: createDealDefinition, execute: createDeal },
+  get_deal_status: { definition: getDealStatusDefinition, execute: getDealStatus },
+  move_deal_stage: { definition: moveDealStageDefinition, execute: moveDealStage },
+  run_cim_analysis: { definition: runCimAnalysisDefinition, execute: runCimAnalysis },
+  generate_ic_memo: { definition: generateIcMemoDefinition, execute: generateIcMemo },
 }
 
 export class ToolRegistry {

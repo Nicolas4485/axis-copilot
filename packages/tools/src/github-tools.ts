@@ -1,5 +1,6 @@
-// GitHub tools — read files, create branches, write files, create PRs
-// Used by agents (Sean, Kevin) for deep work: reviewing code and creating alternatives
+// GitHub tools — discovery (list repos, list files, search code) + deep work (read, write, PR)
+// Discovery tools: Sean, Mel, Aria — find what's built before speccing or comparing features
+// Deep-work tools: Sean — review code, create alternatives, submit PRs
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
 
@@ -222,6 +223,188 @@ export const githubCreatePRDefinition: ToolDefinition = {
     required: ['owner', 'repo', 'title', 'body', 'head'],
   },
 }
+
+// ─── github_list_repos ─────────────────────────────────────────
+
+export const githubListReposDefinition: ToolDefinition = {
+  name: 'github_list_repos',
+  description: 'List GitHub repositories for a user or organisation. Use to discover what repos exist before diving into files.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      owner: { type: 'string', description: 'GitHub username or org (optional — defaults to authenticated user)' },
+      per_page: { type: 'number', description: 'Max repos to return (default 30, max 100)' },
+    },
+  },
+}
+
+export async function githubListRepos(
+  input: Record<string, unknown>,
+  _context: ToolContext
+): Promise<ToolResult> {
+  const start = Date.now()
+  const owner = input['owner'] as string | undefined
+  const perPage = Math.min(Number(input['per_page'] ?? 30), 100)
+
+  try {
+    const url = owner
+      ? `${GITHUB_API}/users/${owner}/repos?per_page=${perPage}&sort=updated`
+      : `${GITHUB_API}/user/repos?per_page=${perPage}&sort=updated`
+
+    const response = await fetch(url, { headers: getHeaders() })
+    if (!response.ok) {
+      return { success: false, data: null, error: `GitHub list repos failed: ${response.status}`, durationMs: Date.now() - start }
+    }
+
+    const raw = await response.json() as Array<{
+      name: string; full_name: string; description: string | null
+      language: string | null; default_branch: string; updated_at: string; private: boolean
+    }>
+
+    const repos = raw.map((r) => ({
+      name: r.name,
+      full_name: r.full_name,
+      description: r.description,
+      language: r.language,
+      default_branch: r.default_branch,
+      updated_at: r.updated_at,
+      private: r.private,
+    }))
+
+    return { success: true, data: { repos, count: repos.length }, durationMs: Date.now() - start }
+  } catch (err) {
+    return { success: false, data: null, error: `GitHub list repos error: ${err instanceof Error ? err.message : 'Unknown'}`, durationMs: Date.now() - start }
+  }
+}
+
+// ─── github_list_files ─────────────────────────────────────────
+
+export const githubListFilesDefinition: ToolDefinition = {
+  name: 'github_list_files',
+  description: 'List files and directories at a path in a GitHub repository. Use to explore repo structure before reading specific files.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      owner: { type: 'string', description: 'Repository owner' },
+      repo: { type: 'string', description: 'Repository name' },
+      path: { type: 'string', description: 'Directory path to list (default: repo root)' },
+      branch: { type: 'string', description: 'Branch name (default: main)' },
+    },
+    required: ['owner', 'repo'],
+  },
+}
+
+export async function githubListFiles(
+  input: Record<string, unknown>,
+  _context: ToolContext
+): Promise<ToolResult> {
+  const start = Date.now()
+  const owner = input['owner'] as string
+  const repo = input['repo'] as string
+  const path = (input['path'] as string | undefined) ?? ''
+  const branch = (input['branch'] as string | undefined) ?? 'main'
+
+  try {
+    const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
+    const response = await fetch(url, { headers: getHeaders() })
+
+    if (!response.ok) {
+      return { success: false, data: null, error: `GitHub list files failed: ${response.status}`, durationMs: Date.now() - start }
+    }
+
+    const raw = await response.json() as Array<{
+      name: string; path: string; type: 'file' | 'dir'; size: number
+    }>
+
+    if (!Array.isArray(raw)) {
+      return { success: false, data: null, error: 'Path points to a file, not a directory — use github_read_file instead', durationMs: Date.now() - start }
+    }
+
+    const entries = raw.map((e) => ({ name: e.name, path: e.path, type: e.type, size: e.size }))
+    return { success: true, data: { path: path || '(root)', branch, entries, count: entries.length }, durationMs: Date.now() - start }
+  } catch (err) {
+    return { success: false, data: null, error: `GitHub list files error: ${err instanceof Error ? err.message : 'Unknown'}`, durationMs: Date.now() - start }
+  }
+}
+
+// ─── github_search_code ────────────────────────────────────────
+
+export const githubSearchCodeDefinition: ToolDefinition = {
+  name: 'github_search_code',
+  description: 'Search code across GitHub repositories. Use to check if a feature already exists before speccing it, or to compare competitor implementations.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Search query (e.g. "RAGEngine" or "useAuth hook")' },
+      owner: { type: 'string', description: 'Limit search to this owner/org (recommended to avoid noise)' },
+      repo: { type: 'string', description: 'Limit search to this specific repo (requires owner)' },
+      language: { type: 'string', description: 'Filter by language (e.g. "TypeScript", "Python")' },
+      per_page: { type: 'number', description: 'Max results (default 10, max 30)' },
+    },
+    required: ['query'],
+  },
+}
+
+export async function githubSearchCode(
+  input: Record<string, unknown>,
+  _context: ToolContext
+): Promise<ToolResult> {
+  const start = Date.now()
+  const query = input['query'] as string
+  const owner = input['owner'] as string | undefined
+  const repo = input['repo'] as string | undefined
+  const language = input['language'] as string | undefined
+  const perPage = Math.min(Number(input['per_page'] ?? 10), 30)
+
+  try {
+    let q = query
+    if (owner && repo) q += ` repo:${owner}/${repo}`
+    else if (owner) q += ` user:${owner}`
+    if (language) q += ` language:${language}`
+
+    const url = `${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=${perPage}`
+    const response = await fetch(url, {
+      headers: {
+        ...getHeaders(),
+        Accept: 'application/vnd.github.v3.text-match+json',
+      },
+    })
+
+    if (response.status === 403) {
+      return { success: false, data: null, error: 'GitHub search rate limit reached — wait 60 seconds and retry', durationMs: Date.now() - start }
+    }
+    if (!response.ok) {
+      return { success: false, data: null, error: `GitHub search failed: ${response.status}`, durationMs: Date.now() - start }
+    }
+
+    const raw = await response.json() as {
+      total_count: number
+      items: Array<{
+        path: string
+        repository: { full_name: string; html_url: string }
+        html_url: string
+        score: number
+      }>
+    }
+
+    const items = raw.items.map((i) => ({
+      path: i.path,
+      repo: i.repository.full_name,
+      url: i.html_url,
+      score: i.score,
+    }))
+
+    return {
+      success: true,
+      data: { query: q, total_count: raw.total_count, items },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    return { success: false, data: null, error: `GitHub search error: ${err instanceof Error ? err.message : 'Unknown'}`, durationMs: Date.now() - start }
+  }
+}
+
+// ─── github_create_pr ──────────────────────────────────────────
 
 export async function githubCreatePR(
   input: Record<string, unknown>,

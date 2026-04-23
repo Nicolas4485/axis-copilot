@@ -11,20 +11,22 @@ import type { AgentConfig } from '../types.js'
 
 const COMPETITIVE_CONFIG: AgentConfig = {
   name: 'Mel',
-  role: 'Competitive Intelligence & Market Analysis Specialist',
+  role: 'Senior Competitive Intelligence Analyst — McKinsey/PE standard; market structure, asymmetric advantages, positioning gaps, single strategic recommendation. Web-first.',
   systemPromptKey: 'AGENT_COMPETITIVE',
-  // web_search FIRST — Mel always checks current data before indexed knowledge
   tools: [
-    'web_search',
-    'search_knowledge_base',
-    'get_market_context',
-    'generate_comparison_matrix',
-    'get_competitive_context',
-    'get_graph_context',
-    'save_competitor',
-    'flag_for_review',
+    'perplexity_search',        // Always first — cited, synthesised live web research for competitive briefs
+    'web_search',               // Fallback when Perplexity unavailable; current competitor data, news, funding
+    'search_knowledge_base',    // Cross-reference web findings against indexed client/deal documents
+    'get_market_context',       // Structured market intelligence: TAM/SAM, growth rates, segment data
+    'get_competitive_context',  // Competitor profiles from knowledge graph: known positioning, past analyses
+    'get_graph_context',        // Entity relationships: competitor ownership, executives, partnerships
+    'generate_comparison_matrix', // Required tabular output for every competitive review
+    'save_competitor',          // Persist named competitor records to keep knowledge graph current
+    'flag_for_review',          // Flag conflicting market data, unverifiable claims, stale sources
+    'github_list_files',        // Explore our repo to verify which features are actually implemented
+    'github_search_code',       // Search codebase to confirm implemented features vs. competitor capabilities
   ],
-  memoryTypes: ['EPISODIC', 'SEMANTIC'],
+  memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }
 
 export class CompetitiveAgent extends BaseAgent {

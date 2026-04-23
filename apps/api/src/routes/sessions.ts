@@ -241,6 +241,33 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
     // Non-critical — Aria still works without history, just starts fresh
   }
 
+  // @-mention detection — route directly to a specialist, skip Aria orchestration
+  const MENTION_MAP: Record<string, 'product' | 'process' | 'competitive' | 'stakeholder'> = {
+    mel: 'competitive', sean: 'product', anjie: 'stakeholder', kevin: 'process',
+  }
+  const mentionMatch = content.match(/^@(\w+)\s+([\s\S]+)/i)
+  if (mentionMatch) {
+    const agentKey = mentionMatch[1]!.toLowerCase()
+    const query = mentionMatch[2]!.trim()
+    const workerType = MENTION_MAP[agentKey]
+    if (workerType) {
+      const WORKER_NAMES: Record<string, string> = { competitive: 'Mel', product: 'Sean', stakeholder: 'Anjie', process: 'Kevin' }
+      const workerName = WORKER_NAMES[workerType]!
+      sendEvent('delegation', { tool: `delegate_${workerType}_analysis`, workerName, query: query.slice(0, 80) })
+      try {
+        await aria.runSpecialistDirectly(sessionId, req.userId!, session.clientId, workerType, query)
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+        sendEvent('done', { error: errorMsg })
+        if (!closed) res.end()
+        return
+      }
+      sendEvent('done', { messageId: sessionId })
+      if (!closed) res.end()
+      return
+    }
+  }
+
   try {
     // Run Aria with real-time progress events (tool calls, RAG, delegations stream as they happen)
     const agentResponse = await aria.handleTextMessage(

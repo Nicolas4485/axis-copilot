@@ -15,6 +15,94 @@ import {
   GitBranch, Globe, Database, Bot, Loader2,
 } from 'lucide-react'
 
+// ─── Org Chart renderer ───────────────────────────────────────────────────────
+
+type OrgNode = { name: string; role: string; reports?: OrgNode[] }
+
+function OrgChartNode({ node, isRoot }: { node: OrgNode; isRoot: boolean }) {
+  const hasReports = Array.isArray(node.reports) && node.reports.length > 0
+  return (
+    <div className="flex flex-col items-center">
+      <div className={`px-3 py-2 rounded-lg border text-center min-w-[110px] max-w-[170px] shadow-sm ${
+        isRoot
+          ? 'border-[var(--gold)]/40 bg-[var(--gold)]/[0.06]'
+          : 'border-[rgba(0,0,0,0.1)] bg-white'
+      }`}>
+        <div className="text-[12px] font-semibold text-[var(--chat-text)] truncate">{node.name}</div>
+        <div className="text-[10px] text-[var(--text-muted)] mt-0.5 truncate leading-tight">{node.role}</div>
+      </div>
+      {hasReports && (
+        <div className="flex flex-col items-center">
+          <div className="w-px h-3 bg-[rgba(0,0,0,0.15)]" />
+          <div className="relative flex gap-4 items-start">
+            {node.reports!.length > 1 && (
+              <div className="absolute top-0 left-4 right-4 h-px bg-[rgba(0,0,0,0.15)]" />
+            )}
+            {node.reports!.map((child, i) => (
+              <div key={i} className="flex flex-col items-center">
+                <div className="w-px h-3 bg-[rgba(0,0,0,0.15)]" />
+                <OrgChartNode node={child} isRoot={false} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OrgChartBlock({ json }: { json: string }) {
+  try {
+    const nodes = JSON.parse(json) as OrgNode[]
+    if (!Array.isArray(nodes)) throw new Error('not an array')
+    return (
+      <div className="my-3 overflow-x-auto rounded-lg border border-[rgba(0,0,0,0.07)] bg-[#FAFAFA] py-4 px-6">
+        <p className="text-[10px] font-mono tracking-widest uppercase text-[var(--text-muted)] mb-3">Org Chart</p>
+        <div className="flex gap-8 items-start min-w-max">
+          {nodes.map((node, i) => (
+            <OrgChartNode key={i} node={node} isRoot={true} />
+          ))}
+        </div>
+      </div>
+    )
+  } catch {
+    return <pre className="text-xs bg-gray-50 rounded p-3 overflow-x-auto whitespace-pre-wrap">{json}</pre>
+  }
+}
+
+const ORGCHART_RE = /```orgchart\n([\s\S]*?)```/g
+
+function renderMessageContent(content: string, streaming?: boolean) {
+  const segments: Array<{ type: 'markdown' | 'orgchart'; text: string }> = []
+  let lastIndex = 0
+  ORGCHART_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = ORGCHART_RE.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'markdown', text: content.slice(lastIndex, match.index) })
+    }
+    segments.push({ type: 'orgchart', text: match[1]!.trim() })
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < content.length) {
+    segments.push({ type: 'markdown', text: content.slice(lastIndex) })
+  }
+  if (segments.length === 0 || (segments.length === 1 && segments[0]!.type === 'markdown')) {
+    return <MarkdownMessage content={content} streaming={streaming ?? false} />
+  }
+  return (
+    <>
+      {segments.map((seg, i) =>
+        seg.type === 'orgchart'
+          ? <OrgChartBlock key={i} json={seg.text} />
+          : seg.text.trim()
+            ? <MarkdownMessage key={i} content={seg.text} streaming={false} />
+            : null
+      )}
+    </>
+  )
+}
+
 /** Creates a session then hands the new ID back — shown while live mode initialises */
 function LiveSessionCreator({ onSessionCreated, onError }: {
   onSessionCreated: (id: string) => void
@@ -47,6 +135,9 @@ export default function SessionPage() {
   const searchParams      = useSearchParams()
   const [sessionId, setSessionId]         = useState(paramId === 'new' ? null : paramId)
   const [input, setInput]                 = useState('')
+  const [mentionOpen, setMentionOpen]     = useState(false)
+  const [mentionIndex, setMentionIndex]   = useState(0)
+  const [mentionFilter, setMentionFilter] = useState('')
   const [mode, setMode]                   = useState<string>('intake')
   const [streaming, setStreaming]         = useState(false)
   const [streamContent, setStreamContent] = useState('')
@@ -303,7 +394,34 @@ export default function SessionPage() {
     }
   }
 
+  const MENTION_AGENTS = [
+    { name: 'Mel',   role: 'Competitive Intelligence', key: 'competitive' },
+    { name: 'Sean',  role: 'Product Strategy',         key: 'product'     },
+    { name: 'Anjie', role: 'Stakeholder Analysis',     key: 'stakeholder' },
+    { name: 'Kevin', role: 'Process Optimization',     key: 'process'     },
+  ] as const
+
+  const filteredMentions = MENTION_AGENTS.filter(a =>
+    a.name.toLowerCase().startsWith(mentionFilter) || a.key.startsWith(mentionFilter)
+  )
+
+  const selectMention = (name: string) => {
+    setInput(prev => prev.replace(/@\w*$/, `@${name} `))
+    setMentionOpen(false)
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (mentionOpen && filteredMentions.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(prev => (prev + 1) % filteredMentions.length); return }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setMentionIndex(prev => (prev - 1 + filteredMentions.length) % filteredMentions.length); return }
+      if (e.key === 'Tab' || (e.key === 'Enter' && mentionOpen)) {
+        e.preventDefault()
+        const chosen = filteredMentions[mentionIndex]
+        if (chosen) selectMention(chosen.name)
+        return
+      }
+      if (e.key === 'Escape') { setMentionOpen(false); return }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void handleSend()
@@ -515,17 +633,17 @@ export default function SessionPage() {
                     })()}
 
                     <div className={isSpecialist ? 'px-4 py-3' : ''}>
-                      <MarkdownMessage
-                        content={(() => {
+                      {renderMessageContent(
+                        (() => {
                           const meta = 'metadata' in msg ? (msg.metadata as Record<string, unknown> | null) : null
                           const c = msg.content
                           if (meta?.['isPartial'] === true) {
                             return c.replace(/^\[PARTIAL RESULT[^\]]*\]\n\n/, '')
                           }
                           return c
-                        })()}
-                        streaming={'streaming' in msg && msg.streaming}
-                      />
+                        })(),
+                        'streaming' in msg && msg.streaming
+                      )}
                     </div>
                   </div>
 
@@ -713,7 +831,31 @@ export default function SessionPage() {
           )}
 
           {/* Input bar */}
-          <div className="px-5 py-4 border-t border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+          <div className="relative px-5 py-4 border-t border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+            {/* @-mention picker */}
+            {mentionOpen && filteredMentions.length > 0 && (
+              <div className="absolute bottom-full mb-1 left-5 right-5 max-w-3xl mx-auto z-20">
+                <div className="bg-white border border-[var(--border)] rounded-xl shadow-lg overflow-hidden">
+                  {filteredMentions.map((agent, i) => (
+                    <button
+                      key={agent.name}
+                      onMouseDown={(e) => { e.preventDefault(); selectMention(agent.name) }}
+                      className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
+                        i === mentionIndex ? 'bg-[var(--gold)]/10' : 'hover:bg-[var(--bg-hover)]'
+                      }`}
+                    >
+                      <div className="w-7 h-7 rounded-full bg-[var(--gold)]/10 border border-[var(--gold)]/40 flex items-center justify-center text-[11px] font-semibold text-[var(--gold-dim)] shrink-0">
+                        {agent.name.charAt(0)}
+                      </div>
+                      <div>
+                        <span className="text-[13px] font-medium text-[var(--text-primary)]">@{agent.name}</span>
+                        <span className="text-[11px] text-[var(--text-muted)] ml-2">{agent.role}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="flex items-end gap-2 max-w-3xl mx-auto">
               {/* Upload */}
               <button
@@ -741,7 +883,18 @@ export default function SessionPage() {
               {/* Text area */}
               <textarea
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setInput(val)
+                  const atMatch = val.match(/@(\w*)$/)
+                  if (atMatch) {
+                    setMentionFilter(atMatch[1]!.toLowerCase())
+                    setMentionOpen(true)
+                    setMentionIndex(0)
+                  } else {
+                    setMentionOpen(false)
+                  }
+                }}
                 onKeyDown={handleKeyDown}
                 placeholder="Ask Aria anything…"
                 rows={1}

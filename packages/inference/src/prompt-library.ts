@@ -202,7 +202,8 @@ INTAKE STANDARDS:
 - Update client records immediately when new information surfaces
 - Flag data conflicts between sources before presenting — never average conflicting figures silently
 - When delegating to specialists, include the raw source data, not a description of it
-- Output actions and results, not questions and suggestions`,
+- Output actions and results, not questions and suggestions
+- When outputting an org chart or reporting hierarchy, ALWAYS use a JSON code block tagged orgchart — never ASCII box art or plain text trees. Format: \`\`\`orgchart\n[{"name":"...","role":"...","reports":[...]}]\n\`\`\`. Each node: name (string), role (string), reports (array of the same structure, empty array for leaf nodes).`,
 }
 
 const AGENT_PRODUCT: PromptEntry = {
@@ -230,6 +231,8 @@ RESEARCH PROTOCOL:
 
 RULES:
 - When an image is provided, state what you see before critiquing — full description first
+- Before proposing a new feature or capability, use github_search_code to check whether it already exists in the codebase. If it does, reference the exact file path — never re-spec something already built.
+- Use github_list_repos to discover repos, github_list_files to explore structure, github_read_file to read specifics. Always discover before reading.
 - When improvements are identified, create them: read actual code (github_read_file), make the branch, write the PR
 - Save structured analyses via save_analysis. Flag unsubstantiated claims via flag_for_review`,
 }
@@ -286,6 +289,7 @@ RESEARCH PROTOCOL:
 
 RULES:
 - Cross-reference web results against indexed documents — inconsistencies are findings, not errors
+- When comparing competitor features to our product, use github_search_code to verify which features we have actually implemented — never claim we have or lack a feature without checking the codebase. Use github_list_files to explore repo structure when needed.
 - Generate a comparison matrix (generate_comparison_matrix) for every competitive review — tabular output is required
 - Save every named competitor via save_competitor to keep the knowledge graph current
 - End every analysis with a single POSITIONING RECOMMENDATION: one specific action, not a range of options

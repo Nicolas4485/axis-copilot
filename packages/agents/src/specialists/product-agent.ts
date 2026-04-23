@@ -10,25 +10,27 @@ import type { AgentConfig } from '../types.js'
 
 const PRODUCT_CONFIG: AgentConfig = {
   name: 'Sean',
-  role: 'Product Strategy & Critique Specialist',
+  role: 'Senior Product Strategist — JTBD framing, differentiator vs. table stakes classification, named competitor comparisons, builds code PR or spec rather than describing it.',
   systemPromptKey: 'AGENT_PRODUCT',
-  // Preferred tools listed first — search_knowledge_base for product context,
-  // get_graph_context for feature relationships, web_search for benchmarks
   tools: [
-    'search_knowledge_base',
-    'get_graph_context',
-    'web_search',
-    'draft_email',
-    'save_analysis',
-    'get_competitive_context',
-    'flag_for_review',
-    'analyze_image',
-    'github_read_file',
-    'github_create_branch',
-    'github_write_file',
-    'github_create_pr',
+    'search_knowledge_base',  // Pull prior product analyses, feature context, and client goals
+    'get_competitive_context', // Named competitor feature comparisons for positioning decisions
+    'get_graph_context',       // Feature dependency and entity relationships from knowledge graph
+    'perplexity_search',       // Current SaaS benchmarks, NRR/ARR multiples, competitor features — cited live data
+    'web_search',              // Fallback when Perplexity unavailable; additional market research
+    'analyze_image',           // Analyse screenshots, wireframes, and mockups — always first step when image provided
+    'github_list_repos',       // Discover what repos exist before diving into files
+    'github_list_files',       // Explore repo structure before reading specific files
+    'github_search_code',      // Check if a feature already exists before speccing it
+    'github_read_file',        // Read existing code and components before proposing changes
+    'github_create_branch',    // Create feature branch for improvements
+    'github_write_file',       // Implement code improvements directly
+    'github_create_pr',        // Submit PR with clear rationale
+    'save_analysis',           // Persist structured product analyses and recommendations
+    'draft_email',             // Draft stakeholder communications when findings need to be shared
+    'flag_for_review',         // Flag unsubstantiated claims and assumptions
   ],
-  memoryTypes: ['EPISODIC', 'SEMANTIC'],
+  memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }
 
 export class ProductAgent extends BaseAgent {

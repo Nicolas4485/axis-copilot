@@ -678,6 +678,48 @@ export class Aria {
     return result
   }
 
+  /**
+   * Route a message directly to a single specialist, bypassing Aria orchestration.
+   * Used by @-mention routing: `@Mel top 3 competitors?` → Mel only, no Aria text reply.
+   */
+  async runSpecialistDirectly(
+    sessionId: string,
+    userId: string,
+    clientId: string | null,
+    workerType: WorkerType,
+    query: string
+  ): Promise<AgentResponse> {
+    const WORKER_NAMES: Record<WorkerType, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
+    const workerName = WORKER_NAMES[workerType]
+
+    // Build minimal context (lightweight RAG query for relevant docs)
+    const ragResult = await this.rag.query(query, userId, clientId)
+    const assembled = await this.memory.buildAgentContext(sessionId, userId, clientId, query)
+    const context: AgentContext = {
+      sessionId,
+      clientId,
+      userId,
+      assembledContext: assembled.text,
+      ragResult,
+      stakeholders: [],
+      clientRecord: null,
+    }
+
+    console.log(`[Specialist:${workerName}] @-mention direct route — query="${query.slice(0, 120)}"`)
+    const result = await this.delegate(workerType, query, context)
+
+    // Persist memory + DB message (same as fireDelegationsWithChaining saveResult)
+    void this.memory.storeEpisodicMemory(userId, clientId, `${workerName} (${workerType}) analysis:\n${result.content.slice(0, 3000)}`, [workerType, workerName, sessionId, 'specialist_output'])
+    if (this.prisma) {
+      await this.prisma.message.create({
+        data: { sessionId, role: 'ASSISTANT', content: result.content, mode: 'intake', metadata: { agent: workerName.toLowerCase(), agentType: 'specialist', workerType, toolsUsed: result.toolsUsed, isPartial: result.isPartial ?? false } },
+      })
+      console.log(`[Specialist:${workerName}] ✓ @-mention result saved (${result.content.length} chars)`)
+    }
+
+    return result
+  }
+
   /** Get the InferenceEngine (for cost tracking) */
   getEngine(): InferenceEngine {
     return this.engine
