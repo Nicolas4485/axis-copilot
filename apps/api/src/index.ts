@@ -2,6 +2,7 @@ import { createServer } from 'http'
 import express from 'express'
 import helmet from 'helmet'
 import cors from 'cors'
+import cookieParser from 'cookie-parser'
 import { WebSocketServer } from 'ws'
 import { initEnv } from './lib/env.js'
 import { injectRequestId, authenticate, generalRateLimit } from './middleware/auth.js'
@@ -17,6 +18,18 @@ import { ariaRouter } from './routes/aria.js'
 import { handleAriaLiveWs } from './routes/aria-live-ws.js'
 import { syncRouter } from './routes/sync.js'
 import { documentsRouter } from './routes/documents.js'
+import { userRouter } from './routes/user.js'
+import { dealsRouter } from './routes/deals.js'
+import { agentsRouter } from './routes/agents.js'
+import { auditRouter } from './routes/audit.js'
+import { feedbackRouter } from './routes/feedback.js'
+import { myStyleRouter } from './routes/my-style.js'
+import { auditMiddleware } from './middleware/audit.js'
+import { cimAnalysisRouter } from './routes/cim-analysis.js'
+import { memoRouter } from './routes/memo.js'
+import { ragEvalRouter } from './routes/rag-eval.js'
+import { settingsRouter } from './routes/settings.js'
+import { vdrRouter } from './routes/vdr.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
 import { syncClientsFromDrive } from './scripts/sync-clients-from-drive.js'
@@ -36,7 +49,8 @@ const corsOrigins = process.env['ALLOWED_ORIGINS']?.split(',') ??
   (config.NODE_ENV === 'development'
     ? ['http://localhost:3000', 'http://localhost:3001']
     : 'http://localhost:3000')
-app.use(cors({ origin: corsOrigins }))
+app.use(cors({ origin: corsOrigins, credentials: true }))
+app.use(cookieParser())
 app.use(express.json({ limit: '10mb' }))
 app.use(injectRequestId)
 
@@ -51,6 +65,10 @@ app.use('/api/integrations', integrationsRouter)
 // ─── Protected routes (JWT + rate limit) ──────────────────────────────────────
 app.use('/api', authenticate, generalRateLimit)
 
+// Audit middleware — must be after auth (so req.userId is set) but before routes
+// Uses res.on('finish') so it captures all responses regardless of which route handles them
+app.use(auditMiddleware)
+
 app.get('/api/health/detailed', healthDetailedHandler)
 app.use('/api/sessions', sessionsRouter)
 app.use('/api/clients', clientsRouter)
@@ -60,6 +78,17 @@ app.use('/api/cost', costRouter)
 app.use('/api/aria', ariaRouter)
 app.use('/api/sync', syncRouter)
 app.use('/api/documents', documentsRouter)
+app.use('/api/user', userRouter)
+app.use('/api/deals', dealsRouter)
+app.use('/api/deals', cimAnalysisRouter)
+app.use('/api/deals', memoRouter)
+app.use('/api/deals', vdrRouter)
+app.use('/api/agents', agentsRouter)
+app.use('/api/audit', auditRouter)
+app.use('/api/feedback', feedbackRouter)
+app.use('/api/my-style', myStyleRouter)
+app.use('/api/admin/rag-eval', ragEvalRouter)
+app.use('/api', settingsRouter)
 
 // ─── 404 fallthrough ───────────────────────────────────────────────────────────
 app.use((_req, res) => {
@@ -101,6 +130,32 @@ server.on('upgrade', (request, socket, head) => {
 // ─── Start server ──────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(JSON.stringify({ event: 'server_start', port: PORT, env: config.NODE_ENV }))
+
+  // Start Telegram bot if configured.
+  // Webhook mode in production (TELEGRAM_WEBHOOK_URL set), long-poll otherwise.
+  if (config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_ARIA_USER_ID) {
+    void (async () => {
+      try {
+        const { createTelegramBot } = await import('./telegram/bot.js')
+        const bot = createTelegramBot()
+
+        if (config.NODE_ENV === 'production' && config.TELEGRAM_WEBHOOK_URL) {
+          const hookPath = '/api/telegram/webhook'
+          app.use(hookPath, bot.webhookCallback(hookPath))
+          await bot.telegram.setWebhook(`${config.TELEGRAM_WEBHOOK_URL}${hookPath}`)
+          console.log(JSON.stringify({ event: 'telegram_bot_started', mode: 'webhook' }))
+        } else {
+          void bot.launch()
+          console.log(JSON.stringify({ event: 'telegram_bot_started', mode: 'polling' }))
+        }
+
+        process.once('SIGINT', () => bot.stop('SIGINT'))
+        process.once('SIGTERM', () => bot.stop('SIGTERM'))
+      } catch (err) {
+        console.error('[Telegram] Bot failed to start:', err instanceof Error ? err.message : err)
+      }
+    })()
+  }
 
   // Non-blocking: sync client folders from Google Drive for all users who have
   // a GOOGLE_DRIVE integration. Removes seed data, discovers real clients.

@@ -10,6 +10,7 @@ import { buildMcpBridge } from './mcp-tool-bridge.js'
 import { buildSpecialistDefinitions } from './specialist-definitions.js'
 import { SdkSessionStore } from './session-store.js'
 import { allToolsSlice } from './tool-slices.js'
+import { extractTextContent } from './utils.js'
 
 // In SDK mode, sub-agents are invoked via the Task tool (SDK name: 'Task').
 // This addendum overrides the delegation tool instructions from ARIA_PERSONALITY
@@ -100,18 +101,4 @@ export class AriaTextAgent {
   clearSession(ariaSessionId: string): void {
     this.sessionStore.clear(ariaSessionId)
   }
-}
-
-function extractTextContent(content: unknown): string {
-  if (!Array.isArray(content)) return ''
-  return content
-    .filter(
-      (b): b is { type: 'text'; text: string } =>
-        typeof b === 'object' &&
-        b !== null &&
-        (b as Record<string, unknown>)['type'] === 'text' &&
-        typeof (b as Record<string, unknown>)['text'] === 'string'
-    )
-    .map((b) => b.text)
-    .join('')
 }
