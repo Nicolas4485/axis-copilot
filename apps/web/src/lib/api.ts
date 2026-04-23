@@ -20,13 +20,11 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
-
   const response = await fetch(`${API_BASE}${path}`, {
     method: options.method ?? 'GET',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
@@ -132,6 +130,86 @@ export const clients = {
     request<{ tree: unknown[]; stakeholderCount: number }>(`/api/clients/${id}/orgchart`),
 }
 
+// ─── Deals ────────────────────────────────────────────────────
+
+export type DealStage = 'SOURCING' | 'SCREENING' | 'DILIGENCE' | 'IC_MEMO' | 'CLOSED_WON' | 'CLOSED_LOST' | 'ON_HOLD'
+export type Priority  = 'HIGH' | 'MEDIUM' | 'LOW'
+
+export interface Deal {
+  id:             string
+  userId:         string
+  clientId:       string
+  name:           string
+  stage:          DealStage
+  priority:       Priority
+  targetClose:    string | null
+  sector:         string | null
+  dealSize:       string | null
+  notes:          string | null
+  assigneeId:     string | null
+  createdAt:      string
+  updatedAt:      string
+  client:         { id: string; name: string }
+  sessionCount?:  number
+  documentCount?: number
+  conflictCount?: number
+}
+
+export type SyncStatus = 'PENDING' | 'PROCESSING' | 'INDEXED' | 'FAILED' | 'CONFLICT'
+
+export interface DealDocument {
+  id:            string
+  title:         string
+  mimeType:      string | null
+  docType:       string | null
+  syncStatus:    SyncStatus
+  chunkCount:    number
+  entityCount:   number
+  sourceType:    string
+  createdAt:     string
+  conflictCount: number
+}
+
+export const deals = {
+  list: () =>
+    request<{ deals: Deal[] }>('/api/deals'),
+
+  get: (id: string) =>
+    request<Deal>(`/api/deals/${id}`),
+
+  create: (data: {
+    name: string
+    clientId: string
+    stage?: DealStage
+    priority?: Priority
+    sector?: string
+    dealSize?: string
+    notes?: string
+    targetClose?: string
+  }) => request<Deal>('/api/deals', { method: 'POST', body: data }),
+
+  update: (id: string, data: Partial<Omit<Deal, 'id' | 'userId' | 'client' | 'createdAt' | 'sessionCount' | 'documentCount' | 'conflictCount'>>) =>
+    request<Deal>(`/api/deals/${id}`, { method: 'PATCH', body: data }),
+
+  updateStage: (id: string, stage: DealStage) =>
+    request<Deal>(`/api/deals/${id}/stage`, { method: 'PATCH', body: { stage } }),
+
+  remove: (id: string) =>
+    request<{ success: boolean }>(`/api/deals/${id}`, { method: 'DELETE' }),
+
+  listDocuments: (dealId: string) =>
+    request<{ documents: DealDocument[] }>(`/api/deals/${dealId}/documents`),
+
+  deleteDocument: (dealId: string, docId: string) =>
+    request<{ success: boolean }>(`/api/deals/${dealId}/documents/${docId}`, { method: 'DELETE' }),
+
+  renameDocument: (docId: string, title: string) =>
+    request<{ document: { id: string; title: string } }>(`/api/knowledge/documents/${docId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
+}
+
 // ─── Health ───────────────────────────────────────────────────
 
 export interface HealthStatus {
@@ -171,15 +249,137 @@ export interface EntityDetailsResponse {
   available?: boolean
 }
 
+export interface ConflictRecord {
+  id: string
+  userId: string
+  clientId: string | null
+  entityName: string
+  entityType: string
+  property: string
+  valueA: string
+  valueB: string
+  sourceDocA: string
+  sourceDocB: string
+  status: 'UNRESOLVED' | 'RESOLVED_A' | 'RESOLVED_B' | 'CUSTOM'
+  resolution: string | null
+  resolvedAt: string | null
+  resolvedBy: string | null
+  createdAt: string
+}
+
 export const knowledge = {
   getConflicts: (clientId: string) =>
-    request<{ conflicts: unknown[]; count: number }>(`/api/knowledge/conflicts/${clientId}`),
+    request<{ conflicts: ConflictRecord[]; count: number }>(`/api/knowledge/conflicts/${clientId}`),
+
+  resolveConflict: (conflictId: string, body: { resolution: ConflictRecord['status']; customValue?: string }) =>
+    request<{ conflict: ConflictRecord }>(`/api/knowledge/conflicts/${conflictId}/resolve`, {
+      method: 'POST',
+      body,
+    }),
 
   getGraph: (clientId: string) =>
     request<{ nodes: unknown[]; relationships: unknown[] }>(`/api/knowledge/graph/${clientId}`),
 
   getEntityDetails: (entityId: string) =>
     request<EntityDetailsResponse>(`/api/knowledge/entities/${entityId}/details`),
+}
+
+/** Supported single-file MIME types for direct upload (mirrors server SUPPORTED_MIME_TYPES) */
+export const SINGLE_FILE_ACCEPT =
+  '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md,.csv'
+
+export type SingleFileUploadResult = {
+  documentId: string
+  clientId: string | null
+  docType: string
+  chunkCount: number
+  entityCount: number
+  status: string
+}
+
+/**
+ * Upload a single document (PDF, DOCX, PPTX, etc.) directly.
+ * Returns the ingest result or throws on error.
+ */
+export async function uploadSingleFile(
+  file: File,
+  options: { clientId?: string; dealId?: string },
+): Promise<SingleFileUploadResult> {
+  const form = new FormData()
+  form.append('file', file)
+  if (options.clientId) form.append('clientId', options.clientId)
+  if (options.dealId)   form.append('dealId',   options.dealId)
+
+  const res = await fetch(`${API_BASE}/api/knowledge/upload`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  })
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(body.error ?? `Upload failed (${res.status})`)
+  }
+
+  return res.json() as Promise<SingleFileUploadResult>
+}
+
+export type ZipSSEEvent =
+  | { type: 'extracted'; count: number; message: string }
+  | { type: 'file_start';  filename: string; index: number; total: number }
+  | { type: 'file_done';   filename: string; index: number; total: number; documentId: string; chunks: number }
+  | { type: 'file_error';  filename: string; index: number; total: number; error: string }
+  | { type: 'done';        succeeded: number; failed: number; total: number; documentIds: string[] }
+  | { type: 'error';       message: string }
+
+export function streamZipUpload(
+  file: File,
+  options: { clientId?: string; dealId?: string },
+  onEvent: (event: ZipSSEEvent) => void
+): AbortController {
+  const ctrl = new AbortController()
+  const form = new FormData()
+  form.append('file', file)
+  if (options.clientId) form.append('clientId', options.clientId)
+  if (options.dealId)   form.append('dealId',   options.dealId)
+
+  void (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/knowledge/upload-zip`, {
+        method: 'POST',
+        credentials: 'include',
+        body: form,
+        signal: ctrl.signal,
+      })
+      if (!res.ok || !res.body) {
+        onEvent({ type: 'error', message: `Upload failed (${res.status})` })
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const parts = buf.split('\n\n')
+        buf = parts.pop() ?? ''
+        for (const part of parts) {
+          const line = part.trim()
+          if (!line.startsWith('data:')) continue
+          try {
+            onEvent(JSON.parse(line.slice(5).trim()) as ZipSSEEvent)
+          } catch { /* skip malformed */ }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        onEvent({ type: 'error', message: (err as Error).message })
+      }
+    }
+  })()
+
+  return ctrl
 }
 
 // ─── Analytics ────────────────────────────────────────────────
@@ -213,6 +413,45 @@ export const analytics = {
 
   getAgentMetrics: () =>
     request<{ metrics: AgentMetric[] }>('/api/analytics/agents'),
+}
+
+// ─── User profile ─────────────────────────────────────────────
+
+export type GeminiVoice = 'Aoede' | 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Leda' | 'Orus' | 'Zephyr'
+
+export interface UserProfile {
+  id: string
+  email: string
+  name: string | null
+  voiceName: GeminiVoice
+  role: string
+  createdAt: string
+}
+
+export const userProfile = {
+  get: () =>
+    request<{ user: UserProfile; availableVoices: GeminiVoice[] }>('/api/user/me'),
+  update: (data: { name?: string; voiceName?: GeminiVoice }) =>
+    request<{ user: UserProfile }>('/api/user/me', { method: 'PATCH', body: data }),
+
+  /**
+   * Fetch a TTS sample for the given voice without saving any preference.
+   * Returns raw PCM data + metadata so the frontend can play via Web Audio API.
+   */
+  voicePreview: async (voice: GeminiVoice): Promise<{ audioBase64: string; mimeType: string; sampleRate: number }> => {
+    const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:4000'
+    const res      = await fetch(`${API_BASE}/api/user/voice-preview`, {
+      method:      'POST',
+      credentials: 'include',
+      headers:     { 'Content-Type': 'application/json' },
+      body:        JSON.stringify({ voice }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string; detail?: string }
+      throw new Error(body.error ?? `Voice preview failed (${res.status})`)
+    }
+    return res.json() as Promise<{ audioBase64: string; mimeType: string; sampleRate: number }>
+  },
 }
 
 // ─── Documents ────────────────────────────────────────────────
@@ -316,6 +555,7 @@ export const apiKeys = {
 
 export interface SSEEvent {
   type: 'tool_start' | 'tool_result' | 'token' | 'conflict_warning' | 'sources' | 'delegation' | 'done'
+      | 'rag_search' | 'rag_done' | 'model_call'
   [key: string]: unknown
 }
 
@@ -326,17 +566,13 @@ export function streamMessage(
   onEvent?: (event: SSEEvent) => void
 ): AbortController {
   const controller = new AbortController()
-  const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
 
   console.log('[SSE] Sending to', `${API_BASE}/api/sessions/${sessionId}/messages`)
-  console.log('[SSE] Token present:', !!token)
 
   fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, ...options }),
     signal: controller.signal,
   })
@@ -432,29 +668,143 @@ export const aria = {
     request<{ systemInstruction: string }>('/api/aria/memory-refresh', { method: 'POST', body: { sessionId } }),
 }
 
-/** Stream a message through Aria's text mode */
-export function streamAriaMessage(
-  sessionId: string,
-  content: string,
-  options?: { imageBase64?: string },
-  onEvent?: (event: SSEEvent) => void
+// ─── CIM Analysis ─────────────────────────────────────────────
+
+export interface CimSSEEvent {
+  type: 'step' | 'done' | 'error'
+  step?: string
+  progress?: number
+  message?: string
+  result?: CIMAnalysisResult
+  error?: string
+}
+
+export interface CompanySnapshot {
+  name: string
+  hq: string | null
+  founded: string | null
+  employees: string | null
+  revenue: string | null
+  ebitda: string | null
+  ebitdaMargin: string | null
+  revenueGrowthYoY: string | null
+  description: string | null
+  businessModel: string | null
+  primaryMarket: string | null
+  productsServices: string[]
+  keyCustomers: string[]
+  customerConcentration: string | null
+  managementTeam: Array<{ name: string; title: string; tenure?: string }>
+  keyRisks: string[]
+  growthInitiatives: string[]
+  financials: Array<{ year: string; revenue: string; ebitda?: string; growth?: string }>
+  auditedFinancials: boolean
+  askPrice: string | null
+  proposedEVEBITDA: number | null
+  pageCount: number | null
+}
+
+export interface FitScore {
+  businessQuality: number
+  financialQuality: number
+  managementStrength: number
+  marketDynamics: number
+  dealStructure: number
+  overallFit: number
+  rationale: Record<string, string>
+  recommendation: 'PASS' | 'PROCEED' | 'STRONG_PROCEED'
+  redFlags: Array<{ flag: string; severity: 'HIGH' | 'MEDIUM' | 'LOW'; pageRef: string }>
+}
+
+export interface FinancialYear {
+  year: string
+  revenue: number | null
+  revenueGrowth: number | null
+  grossProfit: number | null
+  grossMargin: number | null
+  ebitda: number | null
+  ebitdaMargin: number | null
+}
+
+export interface FinancialExtraction {
+  years: FinancialYear[]
+  currency: string
+  unit: 'millions' | 'thousands' | 'units'
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export interface CIMConflict {
+  entity: string
+  property: string
+  valueA: string
+  sourceA: string
+  valueB: string
+  sourceB: string
+  severity: 'HIGH' | 'MEDIUM' | 'LOW'
+}
+
+export interface CIMAnalysisResult {
+  documentId: string
+  dealId: string
+  durationMs: number
+  companySnapshot: CompanySnapshot
+  fitScore: FitScore
+  redFlags: Array<{ description: string; severity: 'HIGH' | 'MEDIUM' | 'LOW'; pageRef: string }>
+  keyQuestions: string[]
+  agentInsights: { alex: string }
+  conflicts: CIMConflict[]
+  extractedFinancials?: FinancialExtraction | null
+}
+
+export const cimAnalysis = {
+  getLatest: (dealId: string) =>
+    request<{ result: CIMAnalysisResult; createdAt: string }>(`/api/deals/${dealId}/cim-analysis/latest`),
+}
+
+/**
+ * Stream a CIM analysis for a deal.
+ * Pass either a File (new upload) or a documentId string (already ingested).
+ */
+export function streamCimAnalysis(
+  dealId: string,
+  fileOrDocumentId: File | string,
+  onEvent: (event: CimSSEEvent) => void
 ): AbortController {
   const controller = new AbortController()
-  const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
 
-  fetch(`${API_BASE}/api/aria/messages?sessionId=${sessionId}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ content, ...options }),
-    signal: controller.signal,
-  })
+  const prepareRequest = (): { url: string; init: RequestInit } => {
+    if (fileOrDocumentId instanceof File) {
+      const form = new FormData()
+      form.append('file', fileOrDocumentId)
+      return {
+        url: `${API_BASE}/api/deals/${dealId}/cim-analysis`,
+        init: {
+          method: 'POST',
+          credentials: 'include' as RequestCredentials,
+          body: form,
+          signal: controller.signal,
+        },
+      }
+    }
+    return {
+      url: `${API_BASE}/api/deals/${dealId}/cim-analysis`,
+      init: {
+        method: 'POST',
+        credentials: 'include' as RequestCredentials,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: fileOrDocumentId }),
+        signal: controller.signal,
+      },
+    }
+  }
+
+  const { url, init } = prepareRequest()
+
+  fetch(url, init)
     .then(async (response) => {
       if (!response.ok || !response.body) {
         const text = await response.text().catch(() => '')
-        onEvent?.({ type: 'done', error: `HTTP ${response.status}: ${text}` })
+        onEvent({ type: 'error', error: `HTTP ${response.status}: ${text}` })
         return
       }
 
@@ -473,8 +823,8 @@ export function streamAriaMessage(
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const event = JSON.parse(line.slice(6)) as SSEEvent
-              onEvent?.(event)
+              const event = JSON.parse(line.slice(6)) as CimSSEEvent
+              onEvent(event)
             } catch {
               // Skip malformed events
             }
@@ -484,7 +834,132 @@ export function streamAriaMessage(
     })
     .catch((err) => {
       if (err instanceof Error && err.name !== 'AbortError') {
-        onEvent?.({ type: 'done', error: err.message })
+        onEvent({ type: 'error', error: err.message })
+      }
+    })
+
+  return controller
+}
+
+// ─── IC Memo ──────────────────────────────────────────────────
+
+export interface MemoSection {
+  id: string
+  title: string
+  content: string
+  generatedAt: string
+}
+
+export interface MemoResult {
+  dealId: string
+  companyName: string
+  version: number
+  sections: MemoSection[]
+  generatedAt: string
+  durationMs: number
+}
+
+export type MemoSSEEvent =
+  | { type: 'section_start'; sectionId: string; sectionTitle: string; progress: number; message: string }
+  | { type: 'section_done'; sectionId: string; sectionTitle: string; progress: number; message: string }
+  | { type: 'done'; result: MemoResult }
+  | { type: 'error'; message: string }
+
+export const memo = {
+  getLatest: (dealId: string) =>
+    request<{ memo: MemoResult }>(`/api/deals/${dealId}/memo/latest`),
+}
+
+export function streamMemo(
+  dealId: string,
+  onEvent: (event: MemoSSEEvent) => void,
+): AbortController {
+  const controller = new AbortController()
+
+  fetch(`${API_BASE}/api/deals/${dealId}/generate-memo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      const reader = res.body?.getReader()
+      if (!reader) throw new Error('No stream')
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6)) as MemoSSEEvent
+              onEvent(event)
+            } catch {
+              // skip malformed events
+            }
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err instanceof Error && err.name !== 'AbortError') {
+        onEvent({ type: 'error', message: err.message })
+      }
+    })
+
+  return controller
+}
+
+export function streamMemoSection(
+  dealId: string,
+  sectionId: string,
+  onEvent: (event: MemoSSEEvent) => void,
+): AbortController {
+  const controller = new AbortController()
+
+  fetch(`${API_BASE}/api/deals/${dealId}/memo/section`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sectionId }),
+    credentials: 'include',
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      const reader = res.body?.getReader()
+      if (!reader) throw new Error('No stream')
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6)) as MemoSSEEvent
+              onEvent(event)
+            } catch {
+              // skip malformed events
+            }
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err instanceof Error && err.name !== 'AbortError') {
+        onEvent({ type: 'error', message: err.message })
       }
     })
 

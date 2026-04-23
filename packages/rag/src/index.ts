@@ -10,7 +10,7 @@ import { RelevanceScorer } from './relevance-scorer.js'
 import { Reranker } from './reranker.js'
 import { ContextCompressor } from './context-compressor.js'
 import { CitationTracker } from './citation-tracker.js'
-import type { RAGResult, RAGConflict, RetrievedChunk } from './types.js'
+import type { RAGResult, RAGConflict, RetrievedChunk, GraphInsight } from './types.js'
 
 // Re-export types
 export type {
@@ -154,6 +154,59 @@ export class RAGEngine {
   /** Get the citation tracker for post-processing responses */
   getCitationTracker(): CitationTracker {
     return this.citationTracker
+  }
+
+  /**
+   * Targeted knowledge graph query for a specific entity.
+   *
+   * Used by memo sections to pull entity-specific relationship data
+   * with explicit graph provenance — separate from the broad RAG context.
+   *
+   * Returns a formatted provenance block ready for prompt injection, or
+   * empty string if Neo4j is unavailable or entity has no relationships.
+   *
+   * @param entityName - The entity to look up (e.g. company name, person name)
+   * @param relationshipTypes - Optional filter (e.g. ['COMPETES_WITH', 'HAS_CUSTOMER'])
+   * @param depth - Graph traversal depth (default 2)
+   */
+  async queryGraphForEntity(
+    entityName: string,
+    relationshipTypes?: string[],
+    depth: number = 2
+  ): Promise<{ insights: GraphInsight[]; formatted: string }> {
+    const insights = await this.retriever.queryGraphEntity(
+      entityName,
+      relationshipTypes,
+      depth
+    )
+    const formatted = this.formatGraphProvenanceBlock(insights, entityName)
+    return { insights, formatted }
+  }
+
+  /**
+   * Format a list of graph insights into a labeled provenance block
+   * for prompt injection. Each relationship is tagged [Source: Knowledge Graph]
+   * so the model can distinguish graph-derived facts from document chunks.
+   */
+  formatGraphProvenanceBlock(insights: GraphInsight[], entityName?: string): string {
+    if (insights.length === 0) return ''
+
+    const lines: string[] = [
+      `KNOWLEDGE GRAPH PROVENANCE${entityName ? ` — ${entityName}` : ''}:`,
+      `(The following entity relationships were extracted from indexed documents and stored in the knowledge graph.)`,
+    ]
+
+    for (const insight of insights) {
+      if (insight.relationships.length === 0) continue
+      lines.push(``)
+      lines.push(`  Entity: ${insight.entityName} [${insight.entityType}]`)
+      for (const rel of insight.relationships) {
+        lines.push(`    • [KG] ${insight.entityName} -[${rel.type}]→ ${rel.targetName} (${rel.targetType})`)
+      }
+    }
+
+    lines.push('')
+    return lines.join('\n')
   }
 
   /**

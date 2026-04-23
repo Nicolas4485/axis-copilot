@@ -4,7 +4,9 @@ import multer from 'multer'
 import { fileTypeFromBuffer } from 'file-type'
 import { prisma } from '../lib/prisma.js'
 import { resolveConflictSchema } from '../lib/schemas.js'
-import { IngestionPipeline, SUPPORTED_MIME_TYPES } from '@axis/ingestion'
+import { IngestionPipeline, BulkProcessor, SUPPORTED_MIME_TYPES } from '@axis/ingestion'
+import { InferenceEngine } from '@axis/inference'
+import type { BulkProgressEvent } from '@axis/ingestion'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 
 /** MIME types that are safe to ingest — must match magic bytes */
@@ -72,8 +74,16 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
       return
     }
 
-    const clientId = req.body?.clientId as string | undefined
+    const clientId  = req.body?.clientId  as string | undefined
+    const dealId    = req.body?.dealId    as string | undefined
     const sourceType = (req.body?.sourceType as string | undefined) ?? 'UPLOAD'
+
+    // If dealId provided without clientId, resolve clientId from deal
+    let resolvedClientId = clientId
+    if (dealId && !resolvedClientId) {
+      const deal = await prisma.deal.findFirst({ where: { id: dealId, userId: req.userId! } })
+      if (deal?.clientId) resolvedClientId = deal.clientId
+    }
 
     const pipeline = new IngestionPipeline({ prisma })
     const result = await pipeline.ingestDocument(
@@ -82,12 +92,13 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
       file.mimetype,
       req.userId!,
       {
-        ...(clientId ? { clientId } : {}),
+        ...(resolvedClientId ? { clientId: resolvedClientId } : {}),
+        ...(dealId ? { dealId } : {}),
         sourceType: sourceType as 'UPLOAD' | 'GDRIVE' | 'WEB' | 'MANUAL',
       }
     )
 
-    res.status(result.status === 'FAILED' ? 500 : 200).json({
+    const responseBody: Record<string, unknown> = {
       documentId: result.documentId,
       clientId: result.clientId,
       docType: result.docType,
@@ -97,7 +108,12 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
       status: result.status,
       durationMs: result.durationMs,
       requestId: req.requestId,
-    })
+    }
+    if (result.status === 'FAILED') {
+      responseBody['error'] = 'Ingestion failed'
+      responseBody['details'] = (result as unknown as Record<string, unknown>)['_debugError'] ?? 'Unknown pipeline error'
+    }
+    res.status(result.status === 'FAILED' ? 500 : 200).json(responseBody)
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
 
@@ -112,6 +128,41 @@ knowledgeRouter.post('/upload', upload.single('file'), async (req: Request, res:
     }
 
     res.status(500).json({ error: 'Ingestion failed', code: 'INGESTION_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
+ * PATCH /api/knowledge/documents/:id — Rename a document
+ */
+knowledgeRouter.patch('/documents/:id', async (req: Request, res: Response) => {
+  try {
+    const docId = req.params['id']!
+    const { title } = req.body as { title?: string }
+
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      res.status(400).json({ error: 'title is required', code: 'MISSING_TITLE', requestId: req.requestId })
+      return
+    }
+
+    // Verify ownership
+    const doc = await prisma.knowledgeDocument.findFirst({
+      where: { id: docId, userId: req.userId! },
+    })
+    if (!doc) {
+      res.status(404).json({ error: 'Document not found', code: 'NOT_FOUND', requestId: req.requestId })
+      return
+    }
+
+    const updated = await prisma.knowledgeDocument.update({
+      where: { id: docId },
+      data: { title: title.trim() },
+      select: { id: true, title: true },
+    })
+
+    res.json({ document: updated, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to rename document', code: 'RENAME_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
 
@@ -263,6 +314,6 @@ knowledgeRouter.get('/graph/:clientId', async (req: Request, res: Response) => {
     })
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-    res.status(500).json({ error: 'Failed to fetch graph', code: 'GRAPH_ERROR', details: errorMsg, requestId: req.requestId })
+    res.status(500).json({ error: 'Failed to fetch knowledge graph', code: 'GRAPH_FETCH_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
