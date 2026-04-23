@@ -57,12 +57,20 @@ const MIC_RATE = 16000            // Gemini Live input expects 16 kHz PCM
 const PLAYBACK_RATE = 24000       // Gemini Live output is 24 kHz PCM
 const JITTER_BUFFER_S = 0.12      // 120 ms pre-buffer before starting playback
 const BACKPRESSURE_LIMIT = 65536  // 64 KB — skip mic frame if WS buffer exceeds this
-const SETUP_TIMEOUT = 15_000      // ms to wait for backend "ready" event
+const SETUP_TIMEOUT = 30_000      // ms to wait for backend "ready" event (memory+RAG can take ~10-15s on cold Ollama)
 const MAX_RECONNECT_DELAY = 60_000
 const SCREEN_FRAME_INTERVAL = 2000 // ms between screen-share frames
-// RMS amplitude threshold for voice-activity detection. Uses RMS (not peak)
-// to avoid stopping Aria on brief ambient noise transients.
-const VAD_RMS_THRESHOLD = 0.02
+// RMS threshold to stop Aria's local audio playback when the user speaks.
+// Raised from 0.02 to 0.04 — requires noticeably louder input (actual speech)
+// before cutting Aria off. Background hum and light typing stay below this.
+const VAD_RMS_THRESHOLD = 0.04
+
+// Client-side noise gate: mic frames with RMS below this are dropped before
+// being sent to Gemini. 0.003 ≈ -50 dBFS — permissive enough for low-gain
+// laptop mics while still blocking true silence and electrical hum.
+// Previously 0.008 which was too aggressive and silently dropped all audio
+// from quiet microphones, causing Gemini to never hear the user.
+const NOISE_GATE_RMS = 0.003
 
 // Heartbeat interval: send a no-op message to keep the proxy WebSocket alive
 // through proxies/firewalls that drop idle connections after 60 s.
@@ -291,13 +299,11 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
     try {
       setState('connecting')
 
-      const token = typeof window !== 'undefined' ? localStorage.getItem('axis_token') : null
-      if (!token) throw new Error('Not authenticated')
-
-      // Include reconnect flag so the backend loads conversation history
+      // Token is read from the httpOnly cookie by the server — no need to pass it
+      // explicitly. The browser sends axis_token automatically on same-host WS upgrades.
       const reconnectParam = isReconnectRef.current ? '&reconnect=true' : ''
       isReconnectRef.current = false // consumed — reset before the socket opens
-      const url = `${WS_BASE}/api/aria/live?sessionId=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(token)}${reconnectParam}`
+      const url = `${WS_BASE}/api/aria/live?sessionId=${encodeURIComponent(sessionId)}${reconnectParam}`
       const ws = new WebSocket(url)
       wsRef.current = ws
 
@@ -413,11 +419,19 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           }
 
           // User's transcribed speech
-          const inputTranscript = serverContent['inputTranscript'] as string | undefined
+          const inputTranscription = serverContent['inputTranscription'] as Record<string, unknown> | undefined
+          const inputTranscript = inputTranscription?.['text'] as string | undefined
           if (inputTranscript?.trim()) {
             onTranscript?.(inputTranscript, true)
             // Gemini is processing — show thinking while we wait for audio
             setState('thinking')
+          }
+
+          // Aria's spoken text transcript (outputTranscription replaces modelTurn text in 3.1)
+          const outputTranscription = serverContent['outputTranscription'] as Record<string, unknown> | undefined
+          const outputTranscriptText = outputTranscription?.['text'] as string | undefined
+          if (outputTranscriptText?.trim()) {
+            onAriaResponse?.(outputTranscriptText)
           }
 
           // Aria's audio response
@@ -425,12 +439,14 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
             ?.['parts'] as Array<Record<string, unknown>> | undefined
 
           if (parts) {
-            // Collect any text parts to surface in the transcript
-            const textParts = parts
-              .filter((p) => typeof p['text'] === 'string' && (p['text'] as string).trim())
-              .map((p) => p['text'] as string)
-            if (textParts.length > 0) {
-              onAriaResponse?.(textParts.join(''))
+            // Collect any text parts to surface in the transcript (fallback for models without outputTranscription)
+            if (!outputTranscriptText) {
+              const textParts = parts
+                .filter((p) => typeof p['text'] === 'string' && (p['text'] as string).trim())
+                .map((p) => p['text'] as string)
+              if (textParts.length > 0) {
+                onAriaResponse?.(textParts.join(''))
+              }
             }
 
             // Play any audio parts
@@ -484,13 +500,30 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
           return
         }
 
+        // Clean disconnect — user called disconnect() or session rotation cleanup
         if (event.code === 1000 && !isReconnectRef.current) {
           setState('idle')
           cleanup()
           return
         }
 
-        // Unexpected close — exponential back-off reconnect
+        // Permanent errors — retrying will always produce the same result.
+        // Surface a clear message to the user instead of looping silently.
+        const PERMANENT_CODES: Record<number, string> = {
+          4001: 'Authentication required — please reload the page',
+          4003: 'Session expired — please reload the page',
+          4004: 'Session not found',
+          4503: event.reason || 'Voice mode unavailable — Gemini API key not configured',
+        }
+        if (event.code in PERMANENT_CODES) {
+          onError?.(PERMANENT_CODES[event.code]!)
+          setState('error')
+          cleanup()
+          return
+        }
+
+        // Unexpected close — surface reason if server sent one, then exponential back-off
+        if (event.reason) onError?.(event.reason)
         isReconnectRef.current = true
         const delay = reconnectDelayRef.current
         reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY)
@@ -548,14 +581,35 @@ export function useAriaLive(options: UseAriaLiveOptions): UseAriaLiveReturn {
       micCtxRef.current = ctx
       const source = ctx.createMediaStreamSource(stream)
 
+      // Prime the playback AudioContext NOW while we are still inside the
+      // user-gesture call stack (browser click → toggleMic). Browsers suspend
+      // AudioContexts created outside user gestures and silently ignore
+      // resume() calls. If we let playAudio() create it lazily on the first
+      // WebSocket message, that message arrives outside any gesture and the
+      // context will stay suspended — Gemini's audio arrives but never plays.
+      if (!playbackCtxRef.current) {
+        const pbCtx = new AudioContext({ sampleRate: PLAYBACK_RATE })
+        playbackCtxRef.current = pbCtx
+        void pbCtx.resume()
+      } else if (playbackCtxRef.current.state === 'suspended') {
+        void playbackCtxRef.current.resume()
+      }
+
       // ── Shared per-frame send logic ──────────────────────────────────────
       const sendAudioPcm = (pcm: Int16Array, rms: number): void => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
         // Backpressure: drop frame if the WS send buffer is building up.
         if (wsRef.current.bufferedAmount > BACKPRESSURE_LIMIT) return
 
-        // VAD — interrupt playback when user speaks while Aria is talking.
-        // Uses RMS (root mean square) to avoid false triggers from brief noise transients.
+        // Noise gate — drop frames that are clearly ambient noise before they
+        // ever reach Gemini's VAD. HVAC, keyboard clicks, and idle mic hum all
+        // stay below ~0.008 RMS. Actual speech sits well above it.
+        // The server-side silence injector handles keepalive when frames are dropped.
+        if (rms < NOISE_GATE_RMS) return
+
+        // VAD — interrupt Aria's local audio playback only when the user is
+        // clearly speaking (rms > 0.04). Raised from 0.02 so light background
+        // sounds don't accidentally cut Aria off.
         if (stateRef.current === 'speaking' && rms > VAD_RMS_THRESHOLD) {
           stopAudioPlayback()
         }
