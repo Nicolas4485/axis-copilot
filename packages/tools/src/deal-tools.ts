@@ -193,25 +193,47 @@ export async function getDealStatus(
       return { success: false, data: null, error: `Deal not found: ${input['dealId']}`, durationMs: 0 }
     }
 
-    // Check for CIM analysis (EPISODIC memory tagged with cim_analysis)
-    const cimAnalysis = await prisma.agentMemory.findFirst({
+    const dealId = input['dealId'] as string
+
+    // CIM analysis and IC memo are stored as SEMANTIC AgentMemory records
+    // whose JSON content contains the dealId.
+    // CIM analysis: contains dealId but NOT '"type":"ic_memo"'
+    // IC memo:      contains dealId AND '"type":"ic_memo"'
+    const cimMemory = await prisma.agentMemory.findFirst({
       where: {
         userId: context.userId,
-        memoryType: 'EPISODIC',
-        content: { contains: 'cim_analysis' },
+        memoryType: 'SEMANTIC',
+        content: { contains: dealId },
+        NOT: { content: { contains: '"type":"ic_memo"' } },
       },
       orderBy: { createdAt: 'desc' },
     })
 
-    // Check for IC memo
-    const icMemo = await prisma.agentMemory.findFirst({
+    const icMemoMemory = await prisma.agentMemory.findFirst({
       where: {
-        userId: context.userId,
-        memoryType: 'EPISODIC',
-        content: { contains: 'ic_memo' },
+        AND: [
+          { userId: context.userId },
+          { memoryType: 'SEMANTIC' },
+          { content: { contains: dealId } },
+          { content: { contains: '"type":"ic_memo"' } },
+        ],
       },
       orderBy: { createdAt: 'desc' },
     })
+
+    // Extract CIM summary fields if the memory record exists
+    let cimSummary: Record<string, unknown> | null = null
+    if (cimMemory) {
+      try {
+        const parsed = JSON.parse(cimMemory.content) as Record<string, unknown>
+        cimSummary = {
+          fitScore: parsed['fitScore'] ?? parsed['fit_score'] ?? null,
+          redFlags: parsed['redFlags'] ?? parsed['red_flags'] ?? [],
+          summary: parsed['summary'] ?? null,
+          createdAt: cimMemory.createdAt.toISOString(),
+        }
+      } catch { /* content not parseable as JSON — ignore */ }
+    }
 
     return {
       success: true,
@@ -228,10 +250,11 @@ export async function getDealStatus(
           sourceType: d.sourceType,
           docType: d.docType ?? null,
         })),
-        hasCimAnalysis: !!cimAnalysis,
-        hasIcMemo: !!icMemo,
+        hasCimAnalysis: !!cimMemory,
+        cimAnalysis: cimSummary,
+        hasIcMemo: !!icMemoMemory,
         recentSession: deal.sessions[0] ?? null,
-        nextSteps: buildNextSteps(deal, !!cimAnalysis, !!icMemo),
+        nextSteps: buildNextSteps(deal, !!cimMemory, !!icMemoMemory),
       },
       durationMs: 0,
     }

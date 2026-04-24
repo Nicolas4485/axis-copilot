@@ -8,10 +8,12 @@
 // When Gemini issues a function_call the handler executes the tool server-side
 // via the existing ToolRegistry and sends the result back as a toolResponse.
 
+import { createHash } from 'crypto'
 import type { IncomingMessage } from 'http'
 import WebSocket from 'ws'
 import jwt from 'jsonwebtoken'
 import { prisma } from '../lib/prisma.js'
+import { redis } from '../lib/redis.js'
 import { env } from '../lib/env.js'
 import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
@@ -217,6 +219,32 @@ const GEMINI_LIVE_TOOLS = [
           required: ['title'],
         },
       },
+      {
+        name: 'list_deals',
+        description:
+          'List all deals in the PE pipeline with their names, stages, companies, and IDs. Call this FIRST whenever the user mentions a deal, company, CIM, IC memo, or asks what\'s in the pipeline. Never search Drive for deal information — always check the deal database first.',
+        parameters: {
+          type: 'object',
+          properties: {
+            stage: {
+              type: 'string',
+              description: 'Filter by stage: SOURCING, SCREENING, IC_MEMO, CLOSED_WON, CLOSED_LOST (optional — omit for all)',
+            },
+          },
+        },
+      },
+      {
+        name: 'get_deal_status',
+        description:
+          'Get the full status of a specific deal: stage, uploaded documents, whether CIM analysis has been run, whether an IC memo exists, key findings, fit score, red flags, and next steps. Use this to answer questions like "what do we have on Nexus?", "did Alex finish the DD?", "does the Nexus memo exist?"',
+        parameters: {
+          type: 'object',
+          properties: {
+            dealId: { type: 'string', description: 'Deal ID from list_deals' },
+          },
+          required: ['dealId'],
+        },
+      },
     ],
   },
 ]
@@ -342,8 +370,8 @@ export async function handleAriaLiveWs(
     // Non-critical — Aria still works without the name / falls back to default voice
   }
 
-  // Build Aria's system instruction (memory + RAG + user identity)
-  const config = await aria.buildLiveSessionConfig(sessionId, userId, userName)
+  // Build Aria's system instruction (memory + RAG pre-load + user identity)
+  const config = await aria.buildLiveSessionConfig(sessionId, userId, userName, session.clientId ?? null)
 
   // ─── Load recent conversation history ─────────────────────────────────────
   // Always load the last 10 messages so Gemini has context even on fresh
@@ -510,14 +538,30 @@ export async function handleAriaLiveWs(
     }
 
     // ── Tool / function calls from Gemini ─────────────────────────────────
-    // Tools run asynchronously (fire-and-forget) so this message handler
-    // returns immediately. Audio frames from Gemini keep flowing to the
-    // client while tools execute; results are sent back when they complete.
+    // All tools run fire-and-forget: Gemini receives an immediate toolResponse
+    // so it can keep talking, and real results are injected as clientContent
+    // turns when they arrive. This ensures zero silence during tool execution.
     const toolCall = data['toolCall'] as Record<string, unknown> | undefined
     if (toolCall) {
       const functionCalls = toolCall['functionCalls'] as Array<Record<string, unknown>> | undefined
       if (functionCalls && functionCalls.length > 0) {
-        const TOOL_TIMEOUT_MS = 30_000 // hard cap per tool call
+        // Sync tools (write operations) still await before telling Gemini — keeps
+        // confirmation accurate. Everything else runs in background.
+        const SYNC_TOOLS = new Set(['book_meeting', 'create_task', 'delegate_to_agent'])
+        const SYNC_TOOL_TIMEOUT_MS = 30_000
+
+        // Background tools: respond to Gemini immediately, inject result later.
+        // Cache key TTL = 5 min so repeat questions in the same session are instant.
+        const BG_TOOL_TIMEOUT_MS = 15_000
+        const BG_TOOL_ANNOUNCE: Record<string, string> = {
+          search_knowledge_base: 'Searching the knowledge base in the background.',
+          get_graph_context:     'Looking up the knowledge graph in the background.',
+          search_gmail:          'Checking your emails in the background.',
+          read_email:            'Reading that email in the background.',
+          search_google_drive:   'Searching your Drive in the background.',
+          read_drive_document:   'Reading that document in the background.',
+          web_search:            'Running a web search in the background.',
+        }
 
         void (async () => {
           const functionResponses: Array<Record<string, unknown>> = []
@@ -530,8 +574,121 @@ export async function handleAriaLiveWs(
             sendToClient({ type: 'tool_start', tool: name })
             console.log(`[AriaLiveWS] Tool start: ${name}`)
 
-            const timeout = new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`Tool "${name}" timed out after 30 s`)), TOOL_TIMEOUT_MS)
+            // ── Background (fire-and-forget) tools ──────────────────────────
+            if (!SYNC_TOOLS.has(name)) {
+              // Respond to Gemini immediately so it keeps talking
+              functionResponses.push({
+                id: callId,
+                name,
+                response: { output: BG_TOOL_ANNOUNCE[name] ?? 'Looking that up in the background.' },
+              })
+
+              // Build the execution promise for this tool
+              const bgExec: Promise<unknown> =
+                name === 'search_gmail'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GMAIL')
+                      const messages = await goog.searchMessages(
+                        token,
+                        args['query'] as string,
+                        (args['maxResults'] as number | undefined) ?? 5
+                      )
+                      return { messages }
+                    })()
+                  : name === 'read_email'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GMAIL')
+                      return await goog.readMessage(token, args['messageId'] as string)
+                    })()
+                  : name === 'search_google_drive'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
+                      return await goog.listFiles(token, {
+                        query: args['query'] as string,
+                        pageSize: (args['maxResults'] as number | undefined) ?? 5,
+                      })
+                    })()
+                  : name === 'read_drive_document'
+                  ? (async () => {
+                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
+                      const fileId = args['fileId'] as string
+                      const metadata = await goog.getFileMetadata(token, fileId)
+                      const { content: buf, contentType } = await goog.downloadFileAuto(token, fileId, metadata.mimeType)
+                      const parser = getParser(contentType)
+                      if (parser) {
+                        const parsed = await parser.parse(buf, metadata.name)
+                        return {
+                          content: parsed.text.slice(0, 10_000),
+                          name: metadata.name,
+                          sections: parsed.sections.length,
+                          wordCount: parsed.metadata.wordCount,
+                        }
+                      }
+                      return { content: buf.toString('utf8').slice(0, 10_000), name: metadata.name }
+                    })()
+                  : (async () => {
+                      const toolContext = {
+                        sessionId,
+                        userId,
+                        clientId: session.clientId ?? '',
+                        requestId: `live-bg-${callId}`,
+                      }
+                      const toolResult = await aria.executeTool(name, args, toolContext)
+                      return toolResult.success ? toolResult.data : { error: toolResult.error }
+                    })()
+
+              // Run in background with Redis caching (5-min TTL per session)
+              void (async () => {
+                try {
+                  const cacheKey = `aria:live:${sessionId}:${name}:${createHash('md5').update(JSON.stringify(args)).digest('hex')}`
+                  const cached = await redis.get(cacheKey).catch(() => null)
+
+                  let bgResult: unknown
+                  if (cached) {
+                    bgResult = JSON.parse(cached)
+                    console.log(`[AriaLiveWS] Tool cache hit: ${name}`)
+                  } else {
+                    bgResult = await Promise.race([
+                      bgExec,
+                      new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error(`Background tool "${name}" timed out`)), BG_TOOL_TIMEOUT_MS)
+                      ),
+                    ])
+                    await redis.setex(cacheKey, 300, JSON.stringify(bgResult)).catch(() => {})
+                  }
+
+                  sendToClient({ type: 'tool_result', tool: name })
+                  console.log(`[AriaLiveWS] Background tool complete: ${name}`)
+
+                  if (geminiWs.readyState === WebSocket.OPEN) {
+                    const resultText = JSON.stringify(bgResult).slice(0, 3000)
+                    geminiWs.send(JSON.stringify({
+                      clientContent: {
+                        turns: [{
+                          role: 'user',
+                          parts: [{
+                            text: `BACKGROUND RESULT — ${name}:\n${resultText}\n\nWeave this into the conversation naturally. If Nicolas just asked about this topic, address it now. If the conversation has moved on, wait for a natural pause and mention it briefly. If the result is empty or unhelpful, skip it.`,
+                          }],
+                        }],
+                        turnComplete: true,
+                      },
+                    }))
+                  }
+                } catch (bgErr) {
+                  const msg = bgErr instanceof Error ? bgErr.message : 'Unknown'
+                  console.error(`[AriaLiveWS] Background tool error (${name}):`, msg)
+                  sendToClient({ type: 'tool_result', tool: name })
+                  // No injection — Aria already answered from existing context
+                }
+              })()
+
+              continue // placeholder already pushed; move to next tool call
+            }
+            // ── End background tools ──────────────────────────────────────
+
+            // ── Synchronous tools (write operations — await before confirming) ─
+            const syncTimeout = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`Tool "${name}" timed out after 30 s`)), SYNC_TOOL_TIMEOUT_MS)
             )
 
             const AGENT_DISPLAY: Record<string, string> = {
@@ -547,8 +704,6 @@ export async function handleAriaLiveWs(
                       const query = args['query'] as string
                       const agentName = AGENT_DISPLAY[workerType] ?? workerType
 
-                      // Fire real delegation in background — we respond to Gemini immediately
-                      // so the voice session doesn't go silent for 5-30 s while agents work.
                       void (async () => {
                         const delegationContext = {
                           sessionId,
@@ -561,7 +716,6 @@ export async function handleAriaLiveWs(
                         }
                         try {
                           const agentResult = await aria.delegate(workerType, query, delegationContext)
-                          // Inject result as a new user turn so Gemini narrates it naturally
                           if (geminiWs.readyState === WebSocket.OPEN) {
                             geminiWs.send(JSON.stringify({
                               clientContent: {
@@ -589,61 +743,11 @@ export async function handleAriaLiveWs(
                         }
                       })()
 
-                      // Immediate toolResponse — Gemini speaks a bridge phrase without waiting
                       return {
                         status: 'delegating',
                         agent: agentName,
                         message: `${agentName} is now working on this. I'll share the results as soon as they're ready — usually about a minute.`,
                       }
-                    })()
-                  : name === 'search_gmail'
-                  ? (async () => {
-                      const token = await getGoogleAccessToken(userId, 'GMAIL')
-                      const messages = await goog.searchMessages(
-                        token,
-                        args['query'] as string,
-                        (args['maxResults'] as number | undefined) ?? 5
-                      )
-                      return { messages }
-                    })()
-                  : name === 'read_email'
-                  ? (async () => {
-                      const token = await getGoogleAccessToken(userId, 'GMAIL')
-                      return await goog.readMessage(token, args['messageId'] as string)
-                    })()
-                  : name === 'search_google_drive'
-                  ? (async () => {
-                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
-                      return await goog.listFiles(token, {
-                        query: args['query'] as string,
-                        pageSize: (args['maxResults'] as number | undefined) ?? 5,
-                      })
-                    })()
-                  : name === 'read_drive_document'
-                  ? (async () => {
-                      const token = await getGoogleAccessToken(userId, 'GOOGLE_DRIVE')
-                      const fileId = args['fileId'] as string
-                      // Fetch actual MIME type first — downloadFile uses it to pick the
-                      // correct API path (export endpoint for Google Workspace files,
-                      // binary ?alt=media for everything else).
-                      const metadata = await goog.getFileMetadata(token, fileId)
-                      // downloadFileAuto picks the best download method per MIME type and
-                      // returns the actual contentType of the bytes (e.g. Slides → tries
-                      // PPTX export, falls back to Slides API plain text if too large).
-                      const { content: buf, contentType } = await goog.downloadFileAuto(token, fileId, metadata.mimeType)
-
-                      const parser = getParser(contentType)
-                      if (parser) {
-                        const parsed = await parser.parse(buf, metadata.name)
-                        return {
-                          content: parsed.text.slice(0, 10_000),
-                          name: metadata.name,
-                          sections: parsed.sections.length,
-                          wordCount: parsed.metadata.wordCount,
-                        }
-                      }
-
-                      return { content: buf.toString('utf8').slice(0, 10_000), name: metadata.name }
                     })()
                   : name === 'book_meeting'
                   ? (async () => {
@@ -674,8 +778,8 @@ export async function handleAriaLiveWs(
                       const event = await calResponse.json() as { id: string; htmlLink: string; summary: string }
                       return { eventId: event.id, link: event.htmlLink, title: event.summary }
                     })()
-                  : name === 'create_task'
-                  ? (async () => {
+                  : (async () => {
+                      // create_task and any other sync tools
                       const title = args['title'] as string
                       const description = (args['description'] as string | undefined) ?? ''
                       const priority = (args['priority'] as string | undefined) ?? 'MEDIUM'
@@ -691,22 +795,12 @@ export async function handleAriaLiveWs(
                       })
                       return { status: 'created', title, priority }
                     })()
-                  : (async () => {
-                      const toolContext = {
-                        sessionId,
-                        userId,
-                        clientId: session.clientId ?? '',
-                        requestId: `live-${callId}`,
-                      }
-                      const toolResult = await aria.executeTool(name, args, toolContext)
-                      return toolResult.success ? toolResult.data : { error: toolResult.error }
-                    })()
 
-              result = await Promise.race([exec, timeout])
-              console.log(`[AriaLiveWS] Tool complete: ${name}`)
+              result = await Promise.race([exec, syncTimeout])
+              console.log(`[AriaLiveWS] Sync tool complete: ${name}`)
             } catch (err) {
               const msg = err instanceof Error ? err.message : 'Tool execution failed'
-              console.error(`[AriaLiveWS] Tool error (${name}):`, msg)
+              console.error(`[AriaLiveWS] Sync tool error (${name}):`, msg)
               result = { error: msg }
             }
 
