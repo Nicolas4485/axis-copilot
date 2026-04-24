@@ -25,6 +25,7 @@ const COMPETITIVE_CONFIG: AgentConfig = {
     'flag_for_review',          // Flag conflicting market data, unverifiable claims, stale sources
     'github_list_files',        // Explore our repo to verify which features are actually implemented
     'github_search_code',       // Search codebase to confirm implemented features vs. competitor capabilities
+    'ask_clarification',        // ONE-TIME use: ask user a blocking question when answer materially changes analysis
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }

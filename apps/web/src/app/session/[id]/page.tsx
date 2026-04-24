@@ -103,6 +103,62 @@ function renderMessageContent(content: string, streaming?: boolean) {
   )
 }
 
+// ─── Clarification input ──────────────────────────────────────────────────────
+
+function ClarificationInput({
+  card,
+  onSubmit,
+}: {
+  card: { requestId: string; question: string; context: string; options?: string[] }
+  onSubmit: (requestId: string, answer: string) => void
+}) {
+  const [text, setText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  const submit = (answer: string) => {
+    if (!answer.trim() || submitting) return
+    setSubmitting(true)
+    onSubmit(card.requestId, answer.trim())
+  }
+
+  return (
+    <div className="space-y-2">
+      {card.options && card.options.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {card.options.map((opt) => (
+            <button
+              key={opt}
+              onClick={() => submit(opt)}
+              disabled={submitting}
+              className="px-3 py-1.5 rounded-full text-[12px] border border-[var(--gold)]/40 text-[var(--gold-dim)] hover:bg-[var(--gold)]/10 transition-colors disabled:opacity-40"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(text) }}
+          placeholder="Type your answer…"
+          disabled={submitting}
+          className="flex-1 input text-[13px] py-1.5 min-h-0 h-8 disabled:opacity-40"
+        />
+        <button
+          onClick={() => submit(text)}
+          disabled={!text.trim() || submitting}
+          className="btn-primary text-[12px] py-1.5 px-3 h-8 disabled:opacity-30"
+        >
+          Answer
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** Creates a session then hands the new ID back — shown while live mode initialises */
 function LiveSessionCreator({ onSessionCreated, onError }: {
   onSessionCreated: (id: string) => void
@@ -152,6 +208,8 @@ export default function SessionPage() {
   const [sources, setSources]             = useState<Array<{ sourceTitle: string; content: string; relevanceScore: number }>>([])
   const [conflicts, setConflicts]         = useState<ConflictRecord[]>([])
   const [showSources, setShowSources]     = useState(false)
+  type ClarificationCard = { requestId: string; question: string; context: string; options?: string[]; answered: boolean; answer?: string }
+  const [clarifications, setClarifications] = useState<ClarificationCard[]>([])
   const [imageBase64, setImageBase64]     = useState<string | null>(null)
   const [imagePreview, setImagePreview]   = useState<string | null>(null)
   const liveMode = searchParams.get('live') === 'true'
@@ -262,6 +320,7 @@ export default function SessionPage() {
     setPendingWorkers([])
     setSources([])
     setConflicts([])
+    setClarifications([])
 
     let activeSessionId = sessionId
     if (!activeSessionId) {
@@ -343,6 +402,17 @@ export default function SessionPage() {
             setPendingWorkers(prev => prev.includes(wName) ? prev : [...prev, wName])
             break
           }
+          case 'ask_user': {
+            const card: ClarificationCard = {
+              requestId: event['requestId'] as string,
+              question:  event['question']  as string,
+              context:   event['context']   as string,
+              ...(Array.isArray(event['options']) ? { options: event['options'] as string[] } : {}),
+              answered:  false,
+            }
+            setClarifications(prev => [...prev, card])
+            break
+          }
           case 'token':
             setStreamContent((prev) => prev + (event['content'] as string ?? ''))
             break
@@ -371,6 +441,21 @@ export default function SessionPage() {
     abortRef.current = controller
     setInput('')
   }, [input, streaming, sessionId, mode, imageBase64, refetch, router])
+
+  const submitClarification = useCallback(async (requestId: string, answer: string) => {
+    if (!sessionId) return
+    setClarifications(prev => prev.map(c => c.requestId === requestId ? { ...c, answered: true, answer } : c))
+    try {
+      await fetch(`/api/sessions/${sessionId}/clarify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requestId, answer }),
+        credentials: 'include',
+      })
+    } catch {
+      // Non-fatal — the timeout fallback in the API will handle it
+    }
+  }, [sessionId])
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -658,6 +743,33 @@ export default function SessionPage() {
                 </div>
               )
             })}
+            {/* Inline clarification question cards */}
+            {clarifications.map((card) => (
+              <div key={card.requestId} className="flex items-start gap-2.5 justify-start animate-fade-up" style={{ animationDuration: '0.2s' }}>
+                <div className="w-7 h-7 rounded-full shrink-0 mt-0.5 flex items-center justify-center text-[11px] font-semibold bg-[#D4EDE3] border border-[rgba(34,160,100,0.30)] text-[#22A064]">
+                  A
+                </div>
+                <div className="max-w-2xl w-full rounded-2xl border border-[var(--gold)]/30 bg-[var(--gold)]/[0.04] overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--gold)]/15 bg-[var(--gold)]/[0.04]">
+                    <MessageSquare size={11} className="text-[var(--gold-dim)]" />
+                    <span className="text-[10px] font-mono tracking-widest uppercase text-[var(--gold-dim)]">Clarification needed</span>
+                  </div>
+                  <div className="px-4 py-3">
+                    <p className="text-[14px] font-medium text-[var(--chat-text)] mb-1">{card.question}</p>
+                    <p className="text-[12px] text-[var(--text-muted)] mb-3">{card.context}</p>
+                    {card.answered ? (
+                      <div className="flex items-center gap-2 text-[12px] text-[#22A064]">
+                        <CheckCircle2 size={13} />
+                        <span>Answered: {card.answer}</span>
+                      </div>
+                    ) : (
+                      <ClarificationInput card={card} onSubmit={submitClarification} />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+
             {/* Pending specialist cards — shown while background agents are running */}
             {pendingWorkers.map((workerName) => (
               <div key={workerName} className="flex items-end gap-2.5 justify-start animate-fade-up" style={{ animationDuration: '0.2s' }}>

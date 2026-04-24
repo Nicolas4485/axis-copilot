@@ -32,6 +32,7 @@ import {
   githubListRepos, githubListReposDefinition,
   githubListFiles, githubListFilesDefinition,
   githubSearchCode, githubSearchCodeDefinition,
+  askClarification, askClarificationDefinition,
   searchGmail, searchGmailDefinition,
   readEmail, readEmailDefinition,
   searchGoogleDrive, searchGoogleDriveDefinition,
@@ -85,6 +86,7 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   github_list_repos: { definition: githubListReposDefinition, execute: githubListRepos },
   github_list_files: { definition: githubListFilesDefinition, execute: githubListFiles },
   github_search_code: { definition: githubSearchCodeDefinition, execute: githubSearchCode },
+  ask_clarification: { definition: askClarificationDefinition, execute: askClarification },
   // Google tools — available in text-mode agentic loop
   search_gmail: { definition: searchGmailDefinition, execute: searchGmail },
   read_email: { definition: readEmailDefinition, execute: readEmail },

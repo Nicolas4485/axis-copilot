@@ -10,23 +10,22 @@ import type { AgentConfig } from '../types.js'
 
 const PROCESS_CONFIG: AgentConfig = {
   name: 'Kevin',
-  role: 'Process Analysis & Automation Specialist',
+  role: 'Senior Process & Automation Consultant — quantifies friction, MAP/MEASURE/REDESIGN/AUTOMATE/GOVERN framework, scores automation candidates 0-100, builds blueprints.',
   systemPromptKey: 'AGENT_PROCESS',
-  // Preferred tools: search_knowledge_base for existing process docs,
-  // get_graph_context for process node dependencies, create_task for action items
   tools: [
-    'search_knowledge_base',
-    'get_graph_context',
-    'create_task',
-    'save_process_analysis',
-    'create_automation_blueprint',
-    'web_search',
-    'flag_for_review',
-    'ingest_document',
-    'github_read_file',
-    'github_write_file',
+    'search_knowledge_base',      // Pull existing process docs, SOPs, and prior analyses from KB
+    'get_graph_context',          // Process node dependencies and system relationships
+    'github_read_file',           // Read existing code before proposing rewrites — never redesign blind
+    'github_write_file',          // Implement automation scripts and config files directly
+    'create_automation_blueprint', // Persist structured automation design for implementation handoff
+    'save_process_analysis',      // Save structured process maps and findings
+    'create_task',                // Create action items with owner and deadline for every recommendation
+    'web_search',                 // Research automation tools, integration patterns, industry benchmarks
+    'flag_for_review',            // Flag high-risk automation points requiring human oversight
+    'ingest_document',            // Ingest process diagrams, SOPs, or architecture docs for analysis
+    'ask_clarification',          // ONE-TIME use: ask user a blocking question when answer materially changes analysis
   ],
-  memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'],
+  memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: remembers past process patterns and corrections
 }
 
 export class ProcessAgent extends BaseAgent {

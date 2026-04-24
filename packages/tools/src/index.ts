@@ -34,6 +34,7 @@ export { githubCreatePR, githubCreatePRDefinition } from './github-tools.js'
 export { githubListRepos, githubListReposDefinition } from './github-tools.js'
 export { githubListFiles, githubListFilesDefinition } from './github-tools.js'
 export { githubSearchCode, githubSearchCodeDefinition } from './github-tools.js'
+export { askClarification, askClarificationDefinition } from './ask-clarification.js'
 
 // Google Workspace integration
 export * as google from './google/index.js'

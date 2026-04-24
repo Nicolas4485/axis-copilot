@@ -8,6 +8,10 @@ import { sharedEngine } from '../lib/inference.js'
 
 const aria = new Aria({ engine: sharedEngine, prisma })
 
+// In-memory store for pending clarification promises (keyed by requestId).
+// These are ephemeral — they only exist while an SSE connection is active.
+const pendingClarifications = new Map<string, (answer: string) => void>()
+
 export const sessionsRouter = Router()
 
 /**
@@ -254,8 +258,15 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
       const WORKER_NAMES: Record<string, string> = { competitive: 'Mel', product: 'Sean', stakeholder: 'Anjie', process: 'Kevin' }
       const workerName = WORKER_NAMES[workerType]!
       sendEvent('delegation', { tool: `delegate_${workerType}_analysis`, workerName, query: query.slice(0, 80) })
+      const onAskUserMention = (question: string, ctx: string, options: string[] | undefined, requestId: string): Promise<string> => {
+        sendEvent('ask_user', { question, context: ctx, options, requestId })
+        return new Promise<string>((resolve) => {
+          pendingClarifications.set(requestId, resolve)
+          setTimeout(() => { pendingClarifications.delete(requestId); resolve('[User did not respond — continue with best available information]') }, 300_000)
+        })
+      }
       try {
-        await aria.runSpecialistDirectly(sessionId, req.userId!, session.clientId, workerType, query)
+        await aria.runSpecialistDirectly(sessionId, req.userId!, session.clientId, workerType, query, onAskUserMention)
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error'
         sendEvent('done', { error: errorMsg })
@@ -269,6 +280,14 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
   }
 
   try {
+    const onAskUser = (question: string, ctx: string, options: string[] | undefined, requestId: string): Promise<string> => {
+      sendEvent('ask_user', { question, context: ctx, options, requestId })
+      return new Promise<string>((resolve) => {
+        pendingClarifications.set(requestId, resolve)
+        setTimeout(() => { pendingClarifications.delete(requestId); resolve('[User did not respond — continue with best available information]') }, 300_000)
+      })
+    }
+
     // Run Aria with real-time progress events (tool calls, RAG, delegations stream as they happen)
     const agentResponse = await aria.handleTextMessage(
       sessionId,
@@ -277,7 +296,9 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
       imageBase64,
       session.clientId,
       priorMessages,
-      (event) => sendEvent(event.type, event)
+      (event) => sendEvent(event.type, event),
+      undefined,
+      onAskUser
     )
 
     // Emit conflict warnings
@@ -338,6 +359,34 @@ sessionsRouter.get('/:id/cost', async (req: Request, res: Response) => {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'Failed to fetch cost', code: 'COST_ERROR', details: errorMsg, requestId: req.requestId })
   }
+})
+
+/**
+ * POST /api/sessions/:id/clarify — Provide an answer to a pending ask_clarification request.
+ * Resolves the in-memory promise held by the agent loop, which resumes execution.
+ */
+sessionsRouter.post('/:id/clarify', async (req: Request, res: Response) => {
+  const sessionId = req.params['id']
+  if (!sessionId) {
+    res.status(400).json({ error: 'Session ID required', code: 'MISSING_ID', requestId: req.requestId })
+    return
+  }
+
+  const { requestId, answer } = req.body as { requestId?: string; answer?: string }
+  if (!requestId || typeof answer !== 'string') {
+    res.status(400).json({ error: 'requestId and answer are required', code: 'VALIDATION_ERROR', requestId: req.requestId })
+    return
+  }
+
+  const resolve = pendingClarifications.get(requestId)
+  if (!resolve) {
+    res.status(404).json({ error: 'Clarification request not found or already answered', code: 'NOT_FOUND', requestId: req.requestId })
+    return
+  }
+
+  pendingClarifications.delete(requestId)
+  resolve(answer)
+  res.json({ ok: true, requestId: req.requestId })
 })
 
 /**

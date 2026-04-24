@@ -29,6 +29,7 @@ const PRODUCT_CONFIG: AgentConfig = {
     'save_analysis',           // Persist structured product analyses and recommendations
     'draft_email',             // Draft stakeholder communications when findings need to be shared
     'flag_for_review',         // Flag unsubstantiated claims and assumptions
+    'ask_clarification',       // ONE-TIME use: ask user a blocking question when answer materially changes analysis
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }

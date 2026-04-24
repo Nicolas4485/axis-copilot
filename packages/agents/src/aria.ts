@@ -117,7 +117,8 @@ export class Aria {
     clientId?: string | null,
     priorMessages?: Array<{ role: 'user' | 'assistant'; content: string }>,
     onProgress?: (event: AriaProgressEvent) => void,
-    clientName?: string | null
+    clientName?: string | null,
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
   ): Promise<AriaResponse> {
     // Step 1: Store user message in working memory
     await this.memory.addToWorkingMemory(sessionId, 'USER', message)
@@ -309,6 +310,28 @@ export class Aria {
             }),
           })
         } else {
+          // ask_clarification: pause and wait for user answer before continuing
+          if (tc.name === 'ask_clarification') {
+            const question  = tc.input['question'] as string ?? ''
+            const ctx       = tc.input['context']  as string ?? ''
+            const opts      = Array.isArray(tc.input['options']) ? tc.input['options'] as string[] : undefined
+            const requestId = `clarify-${tc.id}`
+            let answer: string
+            if (onAskUser) {
+              try { answer = await onAskUser(question, ctx, opts, requestId) }
+              catch { answer = '[User did not respond — continue with best available information]' }
+            } else {
+              answer = '[No clarification channel — continue with best available information]'
+            }
+            toolResults.push({
+              type: 'tool_result' as const,
+              tool_use_id: tc.id,
+              name: tc.name,
+              content: JSON.stringify({ answer }),
+            })
+            continue
+          }
+
           // Skip direct tools when the same batch contains a delegation call
           if (batchHasDelegation) {
             toolResults.push({
@@ -345,7 +368,7 @@ export class Aria {
 
       // Fire all collected delegations with sequential chaining
       if (pendingDelegationRequests.length > 0) {
-        this.fireDelegationsWithChaining(pendingDelegationRequests, context, onProgress, sessionId, userId)
+        this.fireDelegationsWithChaining(pendingDelegationRequests, context, onProgress, sessionId, userId, onAskUser)
       }
 
       // Delegation fired — stop the loop immediately.
@@ -378,7 +401,7 @@ export class Aria {
           console.log(`[Aria] Safeguard delegation → ${WORKER_NAMES_SG[wt]} (Gemini missed this specialist)`)
           delegations.push({ workerType: wt, query: message, success: true })
         }
-        this.fireDelegationsWithChaining(safeguardRequests, context, onProgress, sessionId, userId)
+        this.fireDelegationsWithChaining(safeguardRequests, context, onProgress, sessionId, userId, onAskUser)
       }
     }
 
@@ -436,7 +459,8 @@ export class Aria {
     context: AgentContext,
     onProgress: ((event: AriaProgressEvent) => void) | undefined,
     sessionId: string,
-    userId: string
+    userId: string,
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
   ): void {
     const WORKER_NAMES: Record<WorkerType, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
 
@@ -507,7 +531,7 @@ export class Aria {
       // Run independent workers in parallel
       await Promise.all(independent.map(async (req) => {
         try {
-          const result = await _self.delegate(req.workerType, req.query, context, req.imageBase64)
+          const result = await _self.delegate(req.workerType, req.query, context, req.imageBase64, onAskUser)
           results.set(req.workerType, result)
           await saveResult(req.workerType, result)
         } catch (err) {
@@ -533,7 +557,7 @@ export class Aria {
         const depNames = deps.map(d => WORKER_NAMES[d]).join(', ')
         console.log(`[Specialist:${workerName}] START (chained after ${depNames}) — injecting ${contextParts.reduce((sum, p) => sum + p.length, 0)} chars of context`)
         try {
-          const result = await _self.delegate(req.workerType, enrichedQuery, context, req.imageBase64)
+          const result = await _self.delegate(req.workerType, enrichedQuery, context, req.imageBase64, onAskUser)
           results.set(req.workerType, result)
           await saveResult(req.workerType, result)
         } catch (err) {
@@ -641,7 +665,8 @@ export class Aria {
     workerType: WorkerType,
     query: string,
     context: AgentContext,
-    imageBase64?: string
+    imageBase64?: string,
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
   ): Promise<AgentResponse> {
     const workerNames: Record<WorkerType, string> = {
       product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie',
@@ -653,7 +678,7 @@ export class Aria {
 
     console.log(`[Specialist:${workerName}] START — query="${query.slice(0, 120)}" sessionId=${context.sessionId}`)
 
-    const result = await worker.run(enrichedQuery, context)
+    const result = await worker.run(enrichedQuery, context, onAskUser)
 
     const durationMs = Date.now() - delegationStart
 
@@ -687,7 +712,8 @@ export class Aria {
     userId: string,
     clientId: string | null,
     workerType: WorkerType,
-    query: string
+    query: string,
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
   ): Promise<AgentResponse> {
     const WORKER_NAMES: Record<WorkerType, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
     const workerName = WORKER_NAMES[workerType]
@@ -706,7 +732,7 @@ export class Aria {
     }
 
     console.log(`[Specialist:${workerName}] @-mention direct route — query="${query.slice(0, 120)}"`)
-    const result = await this.delegate(workerType, query, context)
+    const result = await this.delegate(workerType, query, context, undefined, onAskUser)
 
     // Persist memory + DB message (same as fireDelegationsWithChaining saveResult)
     void this.memory.storeEpisodicMemory(userId, clientId, `${workerName} (${workerType}) analysis:\n${result.content.slice(0, 3000)}`, [workerType, workerName, sessionId, 'specialist_output'])

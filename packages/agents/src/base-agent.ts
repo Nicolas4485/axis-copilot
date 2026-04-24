@@ -86,7 +86,11 @@ export class BaseAgent {
    * 5. If insufficient and cycles remain: refine plan → re-retrieve → re-reflect
    * 6. Synthesise via existing tool loop with enriched context
    */
-  async run(userMessage: string, context: AgentContext): Promise<AgentResponse> {
+  async run(
+    userMessage: string,
+    context: AgentContext,
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
+  ): Promise<AgentResponse> {
     const traceStart     = Date.now()
     const toolsUsed: string[]         = []
     const memoryUpdates: MemoryUpdate[] = []
@@ -243,6 +247,27 @@ export class BaseAgent {
 
       for (const toolUse of toolUseBlocks) {
         toolsUsed.push(toolUse.name)
+
+        // ask_clarification: pause loop, wait for user answer via callback, inject as tool result
+        if (toolUse.name === 'ask_clarification') {
+          const question  = toolUse.input['question'] as string ?? ''
+          const ctx       = toolUse.input['context']  as string ?? ''
+          const opts      = Array.isArray(toolUse.input['options']) ? toolUse.input['options'] as string[] : undefined
+          const requestId = `clarify-${toolUse.id}`
+          let answer: string
+          if (onAskUser) {
+            try { answer = await onAskUser(question, ctx, opts, requestId) }
+            catch { answer = '[User did not respond — continue with best available information]' }
+          } else {
+            answer = '[No clarification channel available — continue with best available information]'
+          }
+          toolResultContent.push({
+            type: 'tool_result' as const,
+            tool_use_id: toolUse.id,
+            content: JSON.stringify({ answer }),
+          })
+          continue
+        }
 
         const toolContext = {
           sessionId: context.sessionId,

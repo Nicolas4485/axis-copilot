@@ -94,7 +94,28 @@ When Nicolas says "run CIM analysis", "analyse this CIM", "run DD on Nexus", "ge
 
 If Google Drive/Gmail tools fail with auth errors, do NOT stop and ask. Tell Nicolas the tokens need reconnecting (Settings → Integrations) and proceed with what you can do without Drive — for example, ask Nicolas to paste the Drive file ID or upload the PDF directly.
 
-If Nicolas gives you a Drive link or file name, call search_google_drive first to get the file ID, then pass it straight to run_cim_analysis.`
+If Nicolas gives you a Drive link or file name, call search_google_drive first to get the file ID, then pass it straight to run_cim_analysis.
+
+## Storing corrections and preferences — non-negotiable
+When Nicolas asks to permanently change how any agent (including you) formats, writes, or structures future outputs, ALWAYS call **store_correction** immediately. Do not just say "noted" or "I'll remember that" — that is a lie. Working memory lasts 24 hours. store_correction is permanent.
+
+Triggers for store_correction:
+- "From now on, always..."
+- "Never do X again in..."
+- "I'd like to change how [agent] formats..."
+- "Next time [agent] writes X, it should look like Y"
+- "Make [output type] shorter / more concise / more detailed"
+- Any correction to a specific agent's output style, tone, structure, or format
+
+After calling store_correction, confirm with ONE sentence: "Stored — [instruction] will apply to all future [outputType] outputs."
+
+## Responding to factual errors in agent outputs
+When Nicolas tells you a specific fact, figure, or data point in an agent output is wrong (e.g. "that 40% should be 20%", "the EBITDA is incorrect", "Alex got the revenue wrong"):
+- This is NOT a store_correction situation — data corrections are context-specific, not universal rules
+- ALWAYS call flag_for_review first, logging exactly what was wrong and what the correct value should be
+- Then ask ONE diagnostic question: "Did Alex misread the PDF, or is the source document itself wrong?"
+- If the AI misread it → call run_cim_analysis again with the same dealId. Confirm: "Re-running Alex's analysis on [deal] — this takes 3–5 minutes."
+- If the source PDF is wrong → tell Nicolas to fix the PDF on Drive, then call ingest_document with forceReprocess: true, followed by run_cim_analysis. Confirm: "Once you've updated the PDF on Drive, tell me — I'll re-ingest and re-run the full analysis."`
 
 /** All tools available to Aria via function calling */
 export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
@@ -178,6 +199,49 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
         sessionId: { type: 'string' },
       },
       required: ['fact', 'reason', 'sessionId'],
+    },
+  },
+  {
+    name: 'store_correction',
+    description: `Persist a correction or style preference as a permanent rule for a specific agent and output type. The rule is injected into every future run of that agent automatically — it survives across sessions.
+
+Call this when Nicolas asks to permanently change how any agent formats, writes, or structures future outputs. Triggers:
+- "From now on, always..." / "Never do X again in..."
+- "I'd like to change how [agent] formats Y"
+- "Next time [agent] writes X, it should look like Y"
+- "Make [output type] shorter / more concise / more detailed"
+
+Do NOT just say "noted" — always call this tool so the correction persists.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        agentKey: {
+          type: 'string',
+          enum: ['AGENT_ARIA', 'AGENT_DUE_DILIGENCE', 'AGENT_PRODUCT', 'AGENT_COMPETITIVE', 'AGENT_PROCESS', 'AGENT_STAKEHOLDER'],
+          description: 'Which agent this correction applies to. AGENT_DUE_DILIGENCE = Alex, AGENT_PRODUCT = Sean, AGENT_COMPETITIVE = Mel, AGENT_PROCESS = Kevin, AGENT_STAKEHOLDER = Anjie.',
+        },
+        outputType: {
+          type: 'string',
+          description: 'Type of output this applies to. Examples: cim_analysis, memo_section, email, chat_response, dd_report.',
+        },
+        outputRef: {
+          type: 'string',
+          description: 'Optional: specific section within the output type (e.g. "executive_summary" within "memo_section").',
+        },
+        instruction: {
+          type: 'string',
+          description: 'The specific rule to store. Be precise — vague rules are hard for agents to apply.',
+        },
+        originalText: {
+          type: 'string',
+          description: 'Optional: the original output that was wrong, if available from this conversation.',
+        },
+        correctedText: {
+          type: 'string',
+          description: 'Optional: Nicolas\'s corrected version.',
+        },
+      },
+      required: ['agentKey', 'outputType', 'instruction'],
     },
   },
   {
@@ -353,12 +417,13 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
   {
     name: 'ingest_document',
     description:
-      'Download and index a Google Drive document into the knowledge base. IMPORTANT: This is the ONLY tool that works for Google Slides (.pptx) files — it uses the Google Slides API internally. Always use this for Google Slides. Also use when the user asks to ingest, index, or save any Drive document. Content is searchable immediately when this returns.',
+      'Download and index a Google Drive document into the knowledge base. IMPORTANT: This is the ONLY tool that works for Google Slides (.pptx) files — it uses the Google Slides API internally. Always use this for Google Slides. Also use when the user asks to ingest, index, or save any Drive document. Content is searchable immediately when this returns. Use forceReprocess: true when the source document has been corrected and needs to be re-indexed.',
     input_schema: {
       type: 'object',
       properties: {
         fileId: { type: 'string', description: 'Google Drive file ID to ingest' },
         clientId: { type: 'string', description: 'Client ID to attribute this document to (optional)' },
+        forceReprocess: { type: 'boolean', description: 'Set true to re-ingest even if already indexed. Use when the source document has been corrected on Drive.' },
       },
       required: ['fileId'],
     },
@@ -462,6 +527,19 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
         documentId: { type: 'string', description: 'Existing document ID already on the deal (alternative to driveFileId)' },
       },
       required: ['dealId'],
+    },
+  },
+  {
+    name: 'ask_clarification',
+    description: `Pause and ask the user ONE specific question when you are genuinely blocked. Use ONLY after exhausting Gmail, Drive, knowledge base, and web search. NEVER for confirmation or questions you can answer yourself.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The single specific question' },
+        context:  { type: 'string', description: 'One sentence: why you need this and what changes in your output' },
+        options:  { type: 'array', items: { type: 'string' }, description: 'Optional 2–4 suggested answers' },
+      },
+      required: ['question', 'context'],
     },
   },
   {

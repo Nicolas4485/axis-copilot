@@ -11,23 +11,24 @@ import type { AgentConfig } from '../types.js'
 
 const STAKEHOLDER_CONFIG: AgentConfig = {
   name: 'Anjie',
-  role: 'Stakeholder Mapping & Communication Specialist',
+  role: 'Senior Stakeholder Intelligence & Communications Specialist — Power-Interest mapping, coalition design, reads actual emails before advising, drafts communications not suggestions.',
   systemPromptKey: 'AGENT_STAKEHOLDER',
-  // search_gmail + read_email FIRST — Anjie reads actual comms before making recommendations
   tools: [
-    'search_gmail',
-    'read_email',
-    'search_knowledge_base',
-    'draft_email',
-    'book_meeting',
-    'save_stakeholder',
-    'get_org_chart',
-    'update_stakeholder_influence',
-    'get_graph_context',
-    'web_search',
-    'flag_for_review',
+    'search_gmail',               // Always first — read actual correspondence before assessing any relationship
+    'read_email',                 // Read full thread context: tone, history, commitments, objections
+    'search_knowledge_base',      // Pull indexed meeting notes, prior stakeholder analyses, client context
+    'get_org_chart',              // Formal org structure: reporting lines, span of control, decision authority
+    'get_graph_context',          // Informal relationships: known alliances, cross-company connections
+    'perplexity_search',          // Research stakeholder background, public statements, recent news before any outreach
+    'web_search',                 // Fallback when Perplexity unavailable; additional stakeholder research
+    'draft_email',                // Write the actual communication — not a suggestion of what to say
+    'book_meeting',               // Schedule meetings with proposed agenda when conversation is required
+    'save_stakeholder',           // Persist stakeholder profiles after every intake
+    'update_stakeholder_influence', // Update influence/interest scores as positions shift
+    'flag_for_review',            // Flag political risks, conflicting signals, and unverifiable claims
+    'ask_clarification',          // ONE-TIME use: ask user a blocking question when answer materially changes analysis
   ],
-  memoryTypes: ['EPISODIC', 'SEMANTIC'],
+  memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns relationship patterns and corrections (3C.3)
 }
 
 export class StakeholderAgent extends BaseAgent {

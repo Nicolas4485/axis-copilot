@@ -555,7 +555,7 @@ export const apiKeys = {
 
 export interface SSEEvent {
   type: 'tool_start' | 'tool_result' | 'token' | 'conflict_warning' | 'sources' | 'delegation' | 'done'
-      | 'rag_search' | 'rag_done' | 'model_call'
+      | 'rag_search' | 'rag_done' | 'model_call' | 'ask_user'
   [key: string]: unknown
 }
 
