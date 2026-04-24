@@ -1,7 +1,14 @@
-// save_competitor — Store competitor entry + Neo4j COMPETES_WITH edge
+// save_competitor — Persist competitor profile to AgentMemory (SEMANTIC)
 // Used by: CompetitiveAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
+import { PrismaClient } from '@prisma/client'
+
+let _prisma: PrismaClient | null = null
+function getPrisma(): PrismaClient {
+  if (!_prisma) _prisma = new PrismaClient()
+  return _prisma
+}
 
 export interface SaveCompetitorInput {
   analysisId: string
@@ -41,7 +48,7 @@ export const saveCompetitorDefinition: ToolDefinition = {
 
 export async function saveCompetitor(
   input: Record<string, unknown>,
-  _context: ToolContext
+  context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
   const analysisId = input['analysisId'] as string | undefined
@@ -54,18 +61,20 @@ export async function saveCompetitor(
   const name = competitor['name'] as string
 
   try {
-    // TODO: Create CompetitorEntry via Prisma
-    // await prisma.competitorEntry.create({ data: { analysisId, ...competitor } })
-
-    // TODO: Upsert Neo4j Competitor node + COMPETES_WITH edge
-    // await graphOps.upsertNode('Competitor', { id: `comp_${Date.now()}`, name, ... })
-    // await graphOps.upsertRelationship('COMPETES_WITH', { fromId: clientId, toId: competitorId, ... })
-
-    const competitorId = `comp_${Date.now()}`
+    const prisma = getPrisma()
+    const memory = await prisma.agentMemory.create({
+      data: {
+        userId: context.userId,
+        clientId: context.clientId ?? null,
+        memoryType: 'SEMANTIC',
+        content: JSON.stringify({ ...competitor, analysisId, analysisType: 'competitor' }),
+        tags: ['competitor', name, context.sessionId],
+      },
+    })
 
     return {
       success: true,
-      data: { id: competitorId, analysisId, name },
+      data: { id: memory.id, analysisId, name },
       durationMs: Date.now() - start,
     }
   } catch (err) {

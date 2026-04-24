@@ -7,7 +7,7 @@ export type { ToolContext, ToolResult, ToolDefinition, ToolFunction } from './ty
 export { webSearch, webSearchDefinition } from './web-search.js'
 export { perplexitySearch, perplexitySearchDefinition, formatCitations } from './perplexity-search.js'
 export type { PerplexitySearchInput, PerplexityCitation, PerplexitySearchData } from './perplexity-search.js'
-export { saveClientContext, saveClientContextDefinition } from './save-client-context.js'
+export { saveClientContext, saveClientContextDefinition, getClientContext, getClientContextDefinition } from './save-client-context.js'
 export { searchKnowledgeBase, searchKnowledgeBaseDefinition } from './search-knowledge-base.js'
 export { getGraphContext, getGraphContextDefinition } from './get-graph-context.js'
 export { updateClientRecord, updateClientRecordDefinition } from './update-client-record.js'

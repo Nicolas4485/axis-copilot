@@ -49,11 +49,12 @@ export class HybridRetriever {
     query: DecomposedQuery,
     userId: string,
     clientId: string | null,
-    queryEmbedding: number[]
+    queryEmbedding: number[],
+    dealId?: string | null
   ): Promise<{ chunks: RetrievedChunk[]; graphInsights: GraphInsight[] }> {
     // Run vector search and graph traversal in parallel
     const [chunks, graphInsights] = await Promise.all([
-      this.vectorSearch(query, userId, clientId, queryEmbedding),
+      this.vectorSearch(query, userId, clientId, queryEmbedding, dealId),
       this.graphTraversal(query),
     ])
 
@@ -62,13 +63,14 @@ export class HybridRetriever {
 
   /**
    * Vector search via pgvector cosine similarity.
-   * Filters by userId, optionally by clientId and temporal range.
+   * Filters by userId, optionally by clientId, dealId, and temporal range.
    */
   private async vectorSearch(
     query: DecomposedQuery,
     userId: string,
     clientId: string | null,
-    queryEmbedding: number[]
+    queryEmbedding: number[],
+    dealId?: string | null
   ): Promise<RetrievedChunk[]> {
     const allChunks: RetrievedChunk[] = []
 
@@ -100,6 +102,15 @@ export class HybridRetriever {
         if (clientId) {
           sql += ` AND kd.client_id = $${params.length + 1}`
           params.push(clientId)
+        } else {
+          // Null clientId means unscoped session — only return unscoped documents.
+          // Without this, a null clientId would return documents from ALL clients.
+          sql += ` AND kd.client_id IS NULL`
+        }
+
+        if (dealId) {
+          sql += ` AND kd.deal_id = $${params.length + 1}`
+          params.push(dealId)
         }
 
         // Temporal filter — applied to document_chunks.created_at (timestamptz)
@@ -145,6 +156,66 @@ export class HybridRetriever {
     }
 
     return allChunks
+  }
+
+  /**
+   * Targeted graph query for a specific named entity.
+   *
+   * Used by RAGEngine.queryGraphForEntity() to pull entity-specific relationships
+   * for knowledge graph provenance blocks in IC memo sections.
+   *
+   * Returns [] if Neo4j is unavailable (graceful degradation — never throws).
+   */
+  async queryGraphEntity(
+    entityName: string,
+    relationshipTypes?: string[],
+    depth: number = 2
+  ): Promise<GraphInsight[]> {
+    if (!this.neo4jClient.isAvailable()) return []
+
+    try {
+      const result = await this.graphOps.findRelated(
+        entityName,
+        depth,
+        relationshipTypes && relationshipTypes.length > 0
+          ? relationshipTypes as Array<
+              'COMPETES_WITH' | 'USES_TECHNOLOGY' | 'WORKS_AT' | 'MENTIONED_IN' |
+              'DEPENDS_ON' | 'BLOCKS' | 'INFLUENCES' | 'CONFLICTS_WITH' |
+              'PART_OF' | 'LEADS_TO' | 'REPORTS_TO'
+            >
+          : undefined
+      )
+
+      if (!result) return []
+
+      const relationships = result.relationships.map((r) => ({
+        type: r.relationship.type,
+        targetName: r.targetNode.name,
+        targetType: 'label' in r.targetNode
+          ? (r.targetNode as { label: string }).label
+          : 'Unknown',
+        properties: Object.fromEntries(
+          Object.entries(r.relationship).filter(
+            ([k]) => !['type', 'fromId', 'toId'].includes(k)
+          )
+        ),
+      }))
+
+      return [{
+        entityName: result.node.name,
+        entityType: 'label' in result.node
+          ? (result.node as { label: string }).label
+          : 'Unknown',
+        relationships,
+        readableText: relationships
+          .map((r) => `${result.node.name} -[${r.type}]-> ${r.targetName} (${r.targetType})`)
+          .join('\n'),
+      }]
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown'
+      console.warn(`[HybridRetriever] queryGraphEntity("${entityName}") failed: ${errorMsg}`)
+      return []
+    }
   }
 
   /**

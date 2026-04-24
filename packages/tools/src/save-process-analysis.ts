@@ -1,7 +1,14 @@
-// save_process_analysis — Create Analysis + ProcessStep records
+// save_process_analysis — Persist process analysis to AgentMemory (SEMANTIC)
 // Used by: ProcessAgent
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
+import { PrismaClient } from '@prisma/client'
+
+let _prisma: PrismaClient | null = null
+function getPrisma(): PrismaClient {
+  if (!_prisma) _prisma = new PrismaClient()
+  return _prisma
+}
 
 export interface SaveProcessAnalysisInput {
   sessionId: string
@@ -57,35 +64,30 @@ export async function saveProcessAnalysis(
   context: ToolContext
 ): Promise<ToolResult> {
   const start = Date.now()
-  const sessionId = (input['sessionId'] as string | undefined) ?? context.sessionId
   const analysis = input['analysis'] as Record<string, unknown> | undefined
 
   if (!analysis) {
     return { success: false, data: null, error: 'analysis is required', durationMs: Date.now() - start }
   }
 
-  const summary = analysis['summary'] as string ?? ''
-  const steps = analysis['steps'] as Array<Record<string, unknown>> ?? []
+  const summary = (analysis['summary'] as string | undefined) ?? ''
+  const steps = (analysis['steps'] as Array<Record<string, unknown>> | undefined) ?? []
 
   try {
-    // TODO: Create Analysis + ProcessStep records via Prisma
-    // const record = await prisma.analysis.create({
-    //   data: {
-    //     sessionId, clientId: context.clientId,
-    //     type: 'PROCESS_ANALYSIS', content: analysis, summary,
-    //   },
-    // })
-    // for (const step of steps) {
-    //   await prisma.processStep.create({
-    //     data: { analysisId: record.id, ...step },
-    //   })
-    // }
-
-    const analysisId = `ana_${Date.now()}`
+    const prisma = getPrisma()
+    const memory = await prisma.agentMemory.create({
+      data: {
+        userId: context.userId,
+        clientId: context.clientId ?? null,
+        memoryType: 'SEMANTIC',
+        content: JSON.stringify({ summary, steps, analysisType: 'process_analysis' }),
+        tags: ['analysis', 'process_analysis', context.sessionId],
+      },
+    })
 
     return {
       success: true,
-      data: { id: analysisId, sessionId, summary, stepCount: steps.length },
+      data: { id: memory.id, summary, stepCount: steps.length },
       durationMs: Date.now() - start,
     }
   } catch (err) {

@@ -628,15 +628,31 @@ export class Aria {
     clientId?: string | null,
   ): Promise<LiveSessionConfig> {
     const resolvedClientId = clientId ?? null
-    // Only assemble memory context — no RAG at setup time.
-    // RAG runs Qwen3 (Ollama) for query classification + relevance scoring which
-    // adds 3–7 s of latency before the user has said a single word. Aria has
-    // RAG tools available and will retrieve on demand during the conversation.
-    const assembled = await this.memory.buildAgentContext(sessionId, userId, resolvedClientId, '')
+
+    // Run memory assembly and a lightweight RAG pre-load in parallel.
+    // Pre-loading injects the most relevant knowledge chunks into the system
+    // instruction so Aria can answer common questions without calling tools,
+    // which eliminates the latency hit on the first response.
+    const [assembled, preloadedKnowledge] = await Promise.all([
+      this.memory.buildAgentContext(sessionId, userId, resolvedClientId, ''),
+      (async (): Promise<string | null> => {
+        try {
+          const preload = await this.rag.query(
+            `background context key facts ${userName ?? ''}`,
+            userId,
+            resolvedClientId
+          )
+          // Cap at 2500 chars to keep system instruction within token limits
+          return preload.context ? preload.context.slice(0, 2500) : null
+        } catch {
+          return null
+        }
+      })(),
+    ])
 
     const systemInstruction = buildAriaVoiceSystemInstruction(
       assembled.text,
-      null,   // no pre-fetched RAG context — Aria retrieves on demand
+      preloadedKnowledge,
       userName
     )
 
@@ -644,6 +660,33 @@ export class Aria {
       systemInstruction,
       tools: ARIA_TOOL_DECLARATIONS,
       model: 'gemini-3.1-flash-live-preview',
+    }
+  }
+
+  /**
+   * Assemble a fully populated AgentContext for specialist delegation.
+   * Callable from the WebSocket proxy so that voice-mode delegations get
+   * the same memory + RAG grounding as text-mode delegations.
+   */
+  async buildDelegationContext(
+    sessionId: string,
+    userId: string,
+    clientId: string | null,
+    query: string
+  ): Promise<AgentContext> {
+    const resolvedClientId = clientId ?? null
+    const [assembled, ragResult] = await Promise.all([
+      this.memory.buildAgentContext(sessionId, userId, resolvedClientId, query),
+      this.rag.query(query, userId, resolvedClientId).catch(() => null),
+    ])
+    return {
+      sessionId,
+      clientId: resolvedClientId,
+      userId,
+      assembledContext: assembled.text,
+      ragResult,
+      stakeholders: [],
+      clientRecord: null,
     }
   }
 

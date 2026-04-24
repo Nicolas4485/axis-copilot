@@ -245,6 +245,116 @@ const GEMINI_LIVE_TOOLS = [
           required: ['dealId'],
         },
       },
+      {
+        name: 'create_deal',
+        description:
+          'Create a new deal in the PE pipeline. Use when the user wants to start tracking a new company or investment opportunity. Returns the deal ID needed for CIM analysis.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Deal or company name' },
+            sector: { type: 'string', description: 'Industry sector (e.g. "SaaS", "Healthcare")' },
+            dealSize: { type: 'string', description: 'Approximate deal size (e.g. "$50M–$100M")' },
+            priority: { type: 'string', description: 'LOW, MEDIUM, or HIGH (default MEDIUM)' },
+            notes: { type: 'string', description: 'Initial notes about the deal' },
+          },
+          required: ['name'],
+        },
+      },
+      {
+        name: 'move_deal_stage',
+        description:
+          'Move a deal to a different stage in the PE pipeline. Use when the user decides to advance or close a deal.',
+        parameters: {
+          type: 'object',
+          properties: {
+            dealId: { type: 'string', description: 'Deal ID' },
+            stage: { type: 'string', description: 'Target stage: SOURCING, SCREENING, DILIGENCE, IC_MEMO, CLOSED_WON, CLOSED_LOST, ON_HOLD' },
+            reason: { type: 'string', description: 'Reason for the stage change (optional)' },
+          },
+          required: ['dealId', 'stage'],
+        },
+      },
+      {
+        name: 'save_client_context',
+        description:
+          'Save client context (pain points, goals, budget signals) discovered during this voice session. Call proactively when new client intelligence surfaces — voice session discoveries are lost without this.',
+        parameters: {
+          type: 'object',
+          properties: {
+            clientId: { type: 'string', description: 'Client ID' },
+            context: {
+              type: 'object',
+              properties: {
+                summary: { type: 'string' },
+                painPoints: { type: 'array', items: { type: 'string' } },
+                goals: { type: 'array', items: { type: 'string' } },
+                budgetSignal: { type: 'string' },
+              },
+            },
+          },
+          required: ['clientId', 'context'],
+        },
+      },
+      {
+        name: 'update_client_record',
+        description:
+          'Update a client record with new information learned during the voice session (industry, company size, website, notes).',
+        parameters: {
+          type: 'object',
+          properties: {
+            clientId: { type: 'string' },
+            updates: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                industry: { type: 'string' },
+                companySize: { type: 'string' },
+                website: { type: 'string' },
+                notes: { type: 'string' },
+              },
+            },
+          },
+          required: ['clientId', 'updates'],
+        },
+      },
+      {
+        name: 'save_stakeholder',
+        description:
+          'Save a stakeholder record for a client. Use when the user mentions a person\'s role, influence level, or relationship during a voice session.',
+        parameters: {
+          type: 'object',
+          properties: {
+            clientId: { type: 'string' },
+            stakeholder: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                role: { type: 'string' },
+                influence: { type: 'string', description: 'HIGH, MEDIUM, or LOW' },
+                interest: { type: 'string', description: 'HIGH, MEDIUM, or LOW' },
+                department: { type: 'string' },
+                notes: { type: 'string' },
+              },
+            },
+          },
+          required: ['clientId', 'stakeholder'],
+        },
+      },
+      {
+        name: 'store_correction',
+        description:
+          'Permanently store a correction or style preference so it applies to all future outputs. Use when the user says "from now on always...", "never do X again", or "change how you write Y".',
+        parameters: {
+          type: 'object',
+          properties: {
+            agentKey: { type: 'string', description: 'Which agent: AGENT_ARIA, AGENT_DUE_DILIGENCE, AGENT_PRODUCT, AGENT_COMPETITIVE, AGENT_PROCESS, AGENT_STAKEHOLDER' },
+            outputType: { type: 'string', description: 'Type of output (e.g. cim_analysis, memo_section, chat_response)' },
+            instruction: { type: 'string', description: 'The specific rule to store' },
+          },
+          required: ['agentKey', 'outputType', 'instruction'],
+        },
+      },
     ],
   },
 ]
@@ -705,16 +815,13 @@ export async function handleAriaLiveWs(
                       const agentName = AGENT_DISPLAY[workerType] ?? workerType
 
                       void (async () => {
-                        const delegationContext = {
-                          sessionId,
-                          clientId: session.clientId,
-                          userId,
-                          assembledContext: '',
-                          ragResult: null as never,
-                          stakeholders: [],
-                          clientRecord: null,
-                        }
                         try {
+                          const delegationContext = await aria.buildDelegationContext(
+                            sessionId,
+                            userId,
+                            session.clientId ?? null,
+                            query
+                          )
                           const agentResult = await aria.delegate(workerType, query, delegationContext)
                           if (geminiWs.readyState === WebSocket.OPEN) {
                             geminiWs.send(JSON.stringify({

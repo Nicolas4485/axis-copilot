@@ -87,6 +87,7 @@ export class RAGEngine {
       targetTokens?: number | undefined
       maxChunks?: number | undefined
       clientName?: string | undefined
+      dealId?: string | null | undefined
     }
   ): Promise<RAGResult> {
     const startTime = Date.now()
@@ -107,7 +108,8 @@ export class RAGEngine {
       decomposed,
       userId,
       clientId,
-      queryEmbedding
+      queryEmbedding,
+      options?.dealId
     )
 
     // Step 4: Score chunks for passage-level relevance
@@ -346,26 +348,34 @@ export class RAGEngine {
     }
 
     try {
-      const response = await fetch('https://api.voyageai.com/v1/embeddings', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${voyageKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          input: [query],
-          model: 'voyage-3-lite',
-          input_type: 'query',
-        }),
-      })
+      // Retry up to 3 times on 429 (Voyage AI free tier: 3 RPM)
+      let response: Response | null = null
+      for (let attempt = 0; attempt < 3; attempt++) {
+        response = await fetch('https://api.voyageai.com/v1/embeddings', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${voyageKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            input: [query],
+            model: 'voyage-3-lite',
+            input_type: 'query',
+          }),
+        })
+        if (response.status !== 429) break
+        const waitMs = (attempt + 1) * 22_000 // 22s, 44s — stay under 3 RPM
+        console.warn(`[RAGEngine] Voyage AI 429 — waiting ${waitMs / 1000}s before retry`)
+        await new Promise((r) => setTimeout(r, waitMs))
+      }
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error(`[RAGEngine] Voyage AI error ${response.status}: ${errorText}`)
+      if (!response!.ok) {
+        const errorText = await response!.text()
+        console.error(`[RAGEngine] Voyage AI error ${response!.status}: ${errorText}`)
         return new Array(512).fill(0) as number[]
       }
 
-      const data = await response.json() as {
+      const data = await response!.json() as {
         data: Array<{ embedding: number[] }>
       }
 

@@ -142,6 +142,18 @@ export const ARIA_TOOL_DECLARATIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'get_client_context',
+    description: 'Retrieve previously saved client context: pain points, goals, budget signals, and key notes. Call this when the user asks about a client\'s priorities, budget, or situation — especially in follow-up questions about context established in prior sessions.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        clientId: { type: 'string', description: 'Client ID (optional — uses session client if omitted)' },
+        limit: { type: 'number', description: 'Max records to return (default 5, most recent first)' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'update_client_record',
     description: 'Update a client record with new information (industry, company size, tech stack, etc.).',
     input_schema: {
@@ -613,7 +625,8 @@ You are in a live voice session with Nicolas — treat this like a real-time con
 - **Be concise.** Keep each response to 2–3 sentences unless Nicolas asks for detail. Long answers are hard to listen to.
 - **No markdown.** Never use bullet points, headers, code blocks, or asterisks in your spoken responses — they sound robotic.
 - **Natural language only.** Spell out numbers and abbreviations when speaking (e.g. "thirty percent" not "30%").
-- **Acknowledge before acting.** When you use a tool, say what you're doing: "Let me check your emails on that" or "Searching your Drive now."
+- **Tools run in the background — never go silent.** When you call any search or read tool (knowledge base, graph, Gmail, Drive, web), first speak one brief sentence telling Nicolas what you are doing: "Checking your emails on that in the background" or "Searching the knowledge base now." The tool runs async — keep the conversation going from what you already know. Do NOT wait silently.
+- **How to handle BACKGROUND RESULT messages.** You will receive tool results as a message starting with "BACKGROUND RESULT —". When one arrives: if Nicolas just asked about that topic, address it immediately in natural speech; if the conversation has moved on, wait for a natural pause and say "By the way, I got those results on [topic] — [brief summary]"; if the result is empty or unhelpful, skip mentioning it entirely. Never read out raw JSON — always summarise in one or two spoken sentences.
 - **Search before asking.** Never ask Nicolas for something you can retrieve. Check Gmail, Drive, or the knowledge base first, then report back with findings.
 - **Screen share awareness.** If Nicolas shares his screen, you will receive image frames. Reference what you see naturally: "Looking at your screen, I can see..." — don't mention the technical mechanism.
 - **Interrupt gracefully.** If Nicolas speaks while you are mid-response, stop and listen. Never talk over him.
