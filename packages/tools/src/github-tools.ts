@@ -6,13 +6,13 @@ import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
 
 const GITHUB_API = 'https://api.github.com'
 
-function getHeaders(): Record<string, string> {
-  const token = process.env['GITHUB_TOKEN']
+function getHeaders(token?: string): Record<string, string> {
+  const tok = token ?? process.env['GITHUB_TOKEN']
   const headers: Record<string, string> = {
     'User-Agent': 'AXIS-Copilot',
     Accept: 'application/vnd.github.v3+json',
   }
-  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (tok) headers['Authorization'] = `Bearer ${tok}`
   return headers
 }
 
@@ -45,7 +45,7 @@ export async function githubReadFile(
 
   try {
     const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
-    const response = await fetch(url, { headers: getHeaders() })
+    const response = await fetch(url, { headers: getHeaders(_context.githubToken) })
 
     if (!response.ok) {
       return { success: false, data: null, error: `GitHub read failed: ${response.status}`, durationMs: Date.now() - start }
@@ -99,7 +99,7 @@ export async function githubCreateBranch(
   try {
     // Get the SHA of the base branch
     const refResponse = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/ref/heads/${baseBranch}`, {
-      headers: getHeaders(),
+      headers: getHeaders(_context.githubToken),
     })
 
     if (!refResponse.ok) {
@@ -111,7 +111,7 @@ export async function githubCreateBranch(
     // Create the new branch
     const createResponse = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/refs`, {
       method: 'POST',
-      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      headers: { ...getHeaders(_context.githubToken), 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ref: `refs/heads/${branch}`,
         sha: refData.object.sha,
@@ -168,7 +168,7 @@ export async function githubWriteFile(
     // Check if file exists (to get SHA for update)
     let sha: string | undefined
     const existingResponse = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}?ref=${branch}`, {
-      headers: getHeaders(),
+      headers: getHeaders(_context.githubToken),
     })
     if (existingResponse.ok) {
       const existing = await existingResponse.json() as { sha: string }
@@ -184,7 +184,7 @@ export async function githubWriteFile(
 
     const response = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`, {
       method: 'PUT',
-      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      headers: { ...getHeaders(_context.githubToken), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
 
@@ -251,7 +251,7 @@ export async function githubListRepos(
       ? `${GITHUB_API}/users/${owner}/repos?per_page=${perPage}&sort=updated`
       : `${GITHUB_API}/user/repos?per_page=${perPage}&sort=updated`
 
-    const response = await fetch(url, { headers: getHeaders() })
+    const response = await fetch(url, { headers: getHeaders(_context.githubToken) })
     if (!response.ok) {
       return { success: false, data: null, error: `GitHub list repos failed: ${response.status}`, durationMs: Date.now() - start }
     }
@@ -306,7 +306,7 @@ export async function githubListFiles(
 
   try {
     const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
-    const response = await fetch(url, { headers: getHeaders() })
+    const response = await fetch(url, { headers: getHeaders(_context.githubToken) })
 
     if (!response.ok) {
       return { success: false, data: null, error: `GitHub list files failed: ${response.status}`, durationMs: Date.now() - start }
@@ -365,7 +365,7 @@ export async function githubSearchCode(
     const url = `${GITHUB_API}/search/code?q=${encodeURIComponent(q)}&per_page=${perPage}`
     const response = await fetch(url, {
       headers: {
-        ...getHeaders(),
+        ...getHeaders(_context.githubToken),
         Accept: 'application/vnd.github.v3.text-match+json',
       },
     })
@@ -421,7 +421,7 @@ export async function githubCreatePR(
   try {
     const response = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls`, {
       method: 'POST',
-      headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+      headers: { ...getHeaders(_context.githubToken), 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, body, head, base }),
     })
 

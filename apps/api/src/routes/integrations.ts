@@ -7,6 +7,7 @@ import { googleConnectSchema } from '../lib/schemas.js'
 import { google } from '@axis/tools'
 const { getAuthUrl, exchangeCode, encryptTokens } = google
 import { WebhookHandler } from '@axis/ingestion'
+import { encrypt, decrypt } from '@axis/types'
 
 import { prisma as prismaClient } from '../lib/prisma.js'
 const webhookHandler = new WebhookHandler({ prisma: prismaClient })
@@ -239,3 +240,72 @@ integrationsRouter.get('/google/sync-status', authenticate, async (req: Request,
     res.status(500).json({ error: 'Failed to get sync status', code: 'SYNC_STATUS_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
+
+// ─── GitHub PAT endpoints ──────────────────────────────────────
+
+/**
+ * POST /api/integrations/github/pat — Save a GitHub Personal Access Token
+ * Encrypts the token at rest using AES-256-GCM before storing.
+ */
+integrationsRouter.post('/github/pat', authenticate, async (req: Request, res: Response) => {
+  try {
+    const token = (req.body as { token?: string }).token?.trim()
+    if (!token || token.length < 10) {
+      res.status(400).json({ error: 'A valid GitHub token is required', code: 'VALIDATION_ERROR', requestId: req.requestId })
+      return
+    }
+
+    // Quick sanity-check: verify the token works before saving
+    const ghRes = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'AXIS-Copilot', Accept: 'application/vnd.github.v3+json' },
+    })
+    if (!ghRes.ok) {
+      res.status(422).json({ error: 'GitHub token is invalid or has insufficient permissions', code: 'INVALID_TOKEN', requestId: req.requestId })
+      return
+    }
+
+    const ghUser = await ghRes.json() as { login: string }
+    const encrypted = encrypt(token)
+
+    await prisma.integration.upsert({
+      where: { userId_provider: { userId: req.userId!, provider: 'GITHUB' } },
+      create: { userId: req.userId!, provider: 'GITHUB', accessToken: encrypted },
+      update: { accessToken: encrypted },
+    })
+
+    res.json({ ok: true, login: ghUser.login, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to save GitHub token', code: 'GITHUB_PAT_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
+ * DELETE /api/integrations/github/pat — Remove the stored GitHub token
+ */
+integrationsRouter.delete('/github/pat', authenticate, async (req: Request, res: Response) => {
+  try {
+    await prisma.integration.deleteMany({ where: { userId: req.userId!, provider: 'GITHUB' } })
+    res.json({ ok: true, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to remove GitHub token', code: 'GITHUB_DELETE_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
+/**
+ * Exported helper — resolve the GitHub token for a user.
+ * Prefers the DB-stored token (user-specific), falls back to GITHUB_TOKEN env var (shared).
+ */
+export async function resolveGithubToken(userId: string): Promise<string | undefined> {
+  try {
+    const row = await prisma.integration.findUnique({
+      where: { userId_provider: { userId, provider: 'GITHUB' } },
+      select: { accessToken: true },
+    })
+    if (row?.accessToken) return decrypt(row.accessToken)
+  } catch {
+    // Fall through to env var
+  }
+  return process.env['GITHUB_TOKEN']
+}

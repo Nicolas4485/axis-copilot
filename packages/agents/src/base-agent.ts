@@ -270,10 +270,11 @@ export class BaseAgent {
         }
 
         const toolContext = {
-          sessionId: context.sessionId,
-          userId:    context.userId,
-          clientId:  context.clientId ?? '',
-          requestId: `${context.sessionId}-${iteration}-${toolUse.id}`,
+          sessionId:   context.sessionId,
+          userId:      context.userId,
+          clientId:    context.clientId ?? '',
+          requestId:   `${context.sessionId}-${iteration}-${toolUse.id}`,
+          ...(context.githubToken ? { githubToken: context.githubToken } : {}),
         }
 
         const result: ToolResult = await this.toolRegistry.executeTool(
@@ -481,10 +482,11 @@ export class BaseAgent {
     context: AgentContext
   ): Promise<RetrievedEvidence> {
     const toolCtx = {
-      sessionId: context.sessionId,
-      userId:    context.userId,
-      clientId:  context.clientId ?? '',
-      requestId: `plan-${Date.now()}`,
+      sessionId:   context.sessionId,
+      userId:      context.userId,
+      clientId:    context.clientId ?? '',
+      requestId:   `plan-${Date.now()}`,
+      ...(context.githubToken ? { githubToken: context.githubToken } : {}),
     }
 
     if (item.source === 'vector_kb') {

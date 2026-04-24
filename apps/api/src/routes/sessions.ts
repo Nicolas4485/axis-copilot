@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma.js'
 import { createSessionSchema, sendMessageSchema } from '../lib/schemas.js'
 import { Aria } from '@axis/agents'
 import { sharedEngine } from '../lib/inference.js'
+import { resolveGithubToken } from './integrations.js'
 
 const aria = new Aria({ engine: sharedEngine, prisma })
 
@@ -245,6 +246,9 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
     // Non-critical — Aria still works without history, just starts fresh
   }
 
+  // Resolve per-user GitHub token (DB row takes precedence over shared env var)
+  const githubToken = await resolveGithubToken(req.userId!).catch(() => undefined)
+
   // @-mention detection — route directly to a specialist, skip Aria orchestration
   const MENTION_MAP: Record<string, 'product' | 'process' | 'competitive' | 'stakeholder'> = {
     mel: 'competitive', sean: 'product', anjie: 'stakeholder', kevin: 'process',
@@ -266,7 +270,7 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
         })
       }
       try {
-        await aria.runSpecialistDirectly(sessionId, req.userId!, session.clientId, workerType, query, onAskUserMention)
+        await aria.runSpecialistDirectly(sessionId, req.userId!, session.clientId, workerType, query, onAskUserMention, githubToken)
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error'
         sendEvent('done', { error: errorMsg })
@@ -298,7 +302,8 @@ sessionsRouter.post('/:id/messages', messagesRateLimit, async (req: Request, res
       priorMessages,
       (event) => sendEvent(event.type, event),
       undefined,
-      onAskUser
+      onAskUser,
+      githubToken
     )
 
     // Emit conflict warnings

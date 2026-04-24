@@ -118,7 +118,8 @@ export class Aria {
     priorMessages?: Array<{ role: 'user' | 'assistant'; content: string }>,
     onProgress?: (event: AriaProgressEvent) => void,
     clientName?: string | null,
-    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>,
+    githubToken?: string
   ): Promise<AriaResponse> {
     // Step 1: Store user message in working memory
     await this.memory.addToWorkingMemory(sessionId, 'USER', message)
@@ -182,6 +183,7 @@ export class Aria {
       ragResult,
       stakeholders: [],
       clientRecord: null,
+      ...(githubToken ? { githubToken } : {}),
     }
 
     const toolsUsed: string[] = []
@@ -713,7 +715,8 @@ export class Aria {
     clientId: string | null,
     workerType: WorkerType,
     query: string,
-    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>
+    onAskUser?: (question: string, ctx: string, options: string[] | undefined, requestId: string) => Promise<string>,
+    githubToken?: string
   ): Promise<AgentResponse> {
     const WORKER_NAMES: Record<WorkerType, string> = { product: 'Sean', process: 'Kevin', competitive: 'Mel', stakeholder: 'Anjie' }
     const workerName = WORKER_NAMES[workerType]
@@ -729,6 +732,7 @@ export class Aria {
       ragResult,
       stakeholders: [],
       clientRecord: null,
+      ...(githubToken ? { githubToken } : {}),
     }
 
     console.log(`[Specialist:${workerName}] @-mention direct route — query="${query.slice(0, 120)}"`)

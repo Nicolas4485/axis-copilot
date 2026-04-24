@@ -7,6 +7,7 @@ export interface ToolContext {
   clientId: string | null
   clientName?: string | null
   requestId: string
+  githubToken?: string  // per-user PAT from DB, takes precedence over GITHUB_TOKEN env var
 }
 
 /** Standard result from any tool */

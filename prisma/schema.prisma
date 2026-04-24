@@ -85,6 +85,7 @@ enum IntegrationProvider {
   GOOGLE_SHEETS
   GMAIL
   GOOGLE_DRIVE
+  GITHUB
 }
 
 enum ExportDestination {

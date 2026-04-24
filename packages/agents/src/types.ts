@@ -135,6 +135,8 @@ export interface AgentContext {
   ragResult: RAGResult | null
   stakeholders: StakeholderSummary[]
   clientRecord: ClientRecord | null
+  /** Per-user GitHub PAT resolved from DB (takes precedence over env var) */
+  githubToken?: string
 }
 
 /** A single message in a conversation turn (matches Anthropic message format) */
