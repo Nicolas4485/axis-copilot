@@ -31,6 +31,7 @@ import { ragEvalRouter } from './routes/rag-eval.js'
 import { settingsRouter } from './routes/settings.js'
 import { vdrRouter } from './routes/vdr.js'
 import { analyticsRouter } from './routes/analytics.js'
+import { pitchDeckTemplateRouter } from './routes/pitch-deck-template.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
 import { syncClientsFromDrive } from './scripts/sync-clients-from-drive.js'
@@ -91,6 +92,7 @@ app.use('/api/my-style', myStyleRouter)
 app.use('/api/admin/rag-eval', ragEvalRouter)
 app.use('/api', settingsRouter)
 app.use('/api/analytics', analyticsRouter)
+app.use('/api/pitch-deck', pitchDeckTemplateRouter)
 
 // ─── 404 fallthrough ───────────────────────────────────────────────────────────
 app.use((_req, res) => {

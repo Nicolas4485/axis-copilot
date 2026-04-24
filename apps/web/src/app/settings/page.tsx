@@ -5,15 +5,19 @@ import { ModelConfig } from '@/components/settings/model-config'
 import { WorkspaceSettings } from '@/components/settings/workspace-settings'
 import { ApiKeyManager } from '@/components/settings/api-keys'
 import { TeamSettings } from '@/components/settings/team-settings'
-import { Cpu, Plug, Key, Users } from 'lucide-react'
+import { AriaVoiceSettings } from '@/components/settings/aria-voice-settings'
+import { PitchDeckTemplateSettings } from '@/components/settings/pitch-deck-template'
+import { Cpu, Plug, Key, Users, Volume2, Presentation } from 'lucide-react'
 
-type SettingsTab = 'model' | 'workspace' | 'api-keys' | 'team'
+type SettingsTab = 'model' | 'workspace' | 'api-keys' | 'team' | 'voice' | 'pitch-deck'
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: React.ElementType; desc: string }> = [
-  { id: 'model', label: 'Model', icon: Cpu, desc: 'Temperature, routing, caching' },
-  { id: 'workspace', label: 'Workspace', icon: Plug, desc: 'Google Drive & Gmail' },
-  { id: 'api-keys', label: 'API Keys', icon: Key, desc: 'Programmatic access' },
-  { id: 'team', label: 'Organisation', icon: Users, desc: 'Team name & webhooks' },
+  { id: 'model',      label: 'Model',          icon: Cpu,          desc: 'Temperature, routing, caching' },
+  { id: 'voice',      label: 'Aria Voice',     icon: Volume2,      desc: 'Pick your preferred voice' },
+  { id: 'workspace',  label: 'Workspace',      icon: Plug,         desc: 'Google Drive & Gmail' },
+  { id: 'pitch-deck', label: 'Pitch Deck',     icon: Presentation, desc: 'Upload your brand template' },
+  { id: 'api-keys',   label: 'API Keys',       icon: Key,          desc: 'Programmatic access' },
+  { id: 'team',       label: 'Organisation',   icon: Users,        desc: 'Team name & webhooks' },
 ]
 
 export default function SettingsPage() {
@@ -61,6 +65,16 @@ export default function SettingsPage() {
             </>
           )}
 
+          {activeTab === 'voice' && (
+            <>
+              <h2 className="font-serif text-xl text-[var(--gold)] mb-1">Aria Voice</h2>
+              <p className="text-sm text-[var(--text-muted)] mb-6">
+                Choose the voice Aria uses in live sessions. Your preference is saved to your profile and applied automatically on every new session.
+              </p>
+              <AriaVoiceSettings />
+            </>
+          )}
+
           {activeTab === 'workspace' && (
             <>
               <h2 className="font-serif text-xl text-[var(--gold)] mb-1">Google Workspace</h2>
@@ -78,6 +92,16 @@ export default function SettingsPage() {
                 Create and manage keys for programmatic access to the AXIS API.
               </p>
               <ApiKeyManager />
+            </>
+          )}
+
+          {activeTab === 'pitch-deck' && (
+            <>
+              <h2 className="font-serif text-xl text-[var(--gold)] mb-1">Pitch Deck Template</h2>
+              <p className="text-sm text-[var(--text-muted)] mb-6">
+                Upload a <strong>.pptx</strong> file to extract your brand colours and fonts. Every generated pitch deck will use your template&apos;s styling — no manual formatting required. PDF files cannot be used as templates.
+              </p>
+              <PitchDeckTemplateSettings />
             </>
           )}
 

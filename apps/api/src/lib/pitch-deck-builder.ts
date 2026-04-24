@@ -1,10 +1,13 @@
 // Pitch Deck Builder — generates a PE-standard IC Memo pitch deck (.pptx)
 // from an IC Memo result object using PptxGenJS.
 //
-// Palette: Midnight Executive (navy / ice-blue / gold / white)
+// Palette: Midnight Executive (navy / ice-blue / gold / white) by default.
+// When a PptxTheme is supplied (from the user's uploaded template), the primary,
+// secondary, accent, text, and font tokens are overridden with the extracted values.
 // Layout: LAYOUT_16x9 (10" × 5.625")
 
 import PptxGenJSModule from 'pptxgenjs'
+import type { PptxTheme } from '@axis/ingestion'
 import type { default as PptxGenJSClass } from 'pptxgenjs'
 // @ts-expect-error pptxgenjs declares `export as namespace PptxGenJS` (UMD pattern) which TypeScript
 // treats as a namespace rather than a class, preventing direct use as a type. No clean workaround
@@ -31,7 +34,8 @@ interface IcMemoResult {
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 
-const C = {
+// Mutable design tokens — overridden per call when a user template theme is present
+const C: Record<string, string> = {
   NAVY:       '1E2761',
   NAVY_MID:   '2B3990',
   ICE:        'CADCFC',
@@ -50,8 +54,10 @@ const C = {
   AMBER:      'C05621',
 }
 
-const FONT_TITLE = 'Cambria'
-const FONT_BODY  = 'Calibri'
+// eslint-disable-next-line prefer-const
+let FONT_TITLE = 'Cambria'
+// eslint-disable-next-line prefer-const
+let FONT_BODY  = 'Calibri'
 
 // ─── Helper: strip markdown from content for slide use ────────────────────────
 
@@ -590,7 +596,27 @@ function addClosingSlide(pres: PptxPresentation, memo: IcMemoResult): void {
 
 // ─── Main builder ─────────────────────────────────────────────────────────────
 
-export async function buildPitchDeck(memo: IcMemoResult): Promise<Buffer> {
+export async function buildPitchDeck(memo: IcMemoResult, userTheme?: PptxTheme | null): Promise<Buffer> {
+  // Apply user template theme — override design tokens where provided
+  if (userTheme) {
+    C['NAVY']     = userTheme.colors.primary
+    C['NAVY_MID'] = userTheme.colors.secondary
+    C['GOLD']     = userTheme.colors.accent
+    C['CHARCOAL'] = userTheme.colors.text
+    C['MID_GRAY'] = userTheme.colors.muted
+    FONT_TITLE = userTheme.fonts.heading
+    FONT_BODY  = userTheme.fonts.body
+  } else {
+    // Reset to defaults in case a previous call changed them
+    C['NAVY']     = '1E2761'
+    C['NAVY_MID'] = '2B3990'
+    C['GOLD']     = 'C9A84C'
+    C['CHARCOAL'] = '1A1A2E'
+    C['MID_GRAY'] = '4A5568'
+    FONT_TITLE = 'Cambria'
+    FONT_BODY  = 'Calibri'
+  }
+
   const pres = new PptxGenJS()
   pres.layout = 'LAYOUT_16x9'
   pres.author = 'AXIS Copilot'

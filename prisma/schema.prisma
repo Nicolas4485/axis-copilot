@@ -95,23 +95,78 @@ enum ExportDestination {
   JSON
 }
 
+enum AgentTier {
+  MICRO
+  TASK
+  AGENT
+}
+
+enum DealStage {
+  SOURCING
+  SCREENING
+  DILIGENCE
+  IC_MEMO
+  CLOSED_WON
+  CLOSED_LOST
+  ON_HOLD
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
+
+model Deal {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  clientId    String    @map("client_id")
+  name        String
+  stage       DealStage @default(SOURCING)
+  priority    Priority  @default(MEDIUM)
+  targetClose DateTime? @map("target_close")
+  sector      String?
+  dealSize    String?   @map("deal_size")
+  notes       String?
+  assigneeId  String?   @map("assignee_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user      User                @relation(fields: [userId], references: [id])
+  client    Client              @relation(fields: [clientId], references: [id])
+  sessions  Session[]
+  documents KnowledgeDocument[]
+
+  @@index([userId])
+  @@index([clientId])
+  @@index([stage])
+  @@index([createdAt])
+  @@map("deals")
+}
 
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   name      String?
+  voiceName String   @default("Aoede") @map("voice_name")
   role      UserRole @default(CONSULTANT)
+  settings  Json     @default("{}") @map("settings")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  sessions        Session[]
-  clients         Client[]
-  knowledgeDocs   KnowledgeDocument[]
-  agentMemories   AgentMemory[]
-  integrations    Integration[]
-  conflictRecords ConflictRecord[]
-  costRecords     CostRecord[]
+  sessions           Session[]
+  clients            Client[]
+  deals              Deal[]
+  knowledgeDocs      KnowledgeDocument[]
+  agentMemories      AgentMemory[]
+  integrations       Integration[]
+  conflictRecords    ConflictRecord[]
+  costRecords        CostRecord[]
+  agentDefinitions   AgentDefinition[]
+  outputFeedback     OutputFeedback[]
+  pitchDeckTemplates PitchDeckTemplate[]
 
   @@index([createdAt])
   @@map("users")
@@ -131,6 +186,7 @@ model Client {
 
   user            User                @relation(fields: [userId], references: [id])
   sessions        Session[]
+  deals           Deal[]
   clientContexts  ClientContext[]
   stakeholders    Stakeholder[]
   analyses        Analysis[]
@@ -147,6 +203,7 @@ model Session {
   id        String        @id @default(cuid())
   userId    String        @map("user_id")
   clientId  String?       @map("client_id")
+  dealId    String?       @map("deal_id")
   title     String?
   mode      String?
   status    SessionStatus @default(ACTIVE)
@@ -155,6 +212,7 @@ model Session {
 
   user           User            @relation(fields: [userId], references: [id])
   client         Client?         @relation(fields: [clientId], references: [id])
+  deal           Deal?           @relation(fields: [dealId], references: [id])
   messages       Message[]
   clientContexts ClientContext[]
   analyses       Analysis[]
@@ -163,6 +221,7 @@ model Session {
 
   @@index([userId])
   @@index([clientId])
+  @@index([dealId])
   @@index([status])
   @@index([createdAt])
   @@map("sessions")
@@ -299,6 +358,7 @@ model KnowledgeDocument {
   id                String     @id @default(cuid())
   userId            String     @map("user_id")
   clientId          String?    @map("client_id")
+  dealId            String?    @map("deal_id")
   title             String
   sourceType        SourceType @map("source_type")
   sourcePath        String?    @map("source_path")
@@ -317,10 +377,12 @@ model KnowledgeDocument {
 
   user   User    @relation(fields: [userId], references: [id])
   client Client? @relation(fields: [clientId], references: [id])
+  deal   Deal?   @relation(fields: [dealId], references: [id])
   chunks DocumentChunk[]
 
   @@index([userId])
   @@index([clientId])
+  @@index([dealId])
   @@index([syncStatus])
   @@index([createdAt])
   @@map("knowledge_documents")
@@ -399,6 +461,7 @@ model Integration {
   refreshToken String?             @map("refresh_token")
   expiresAt    DateTime?           @map("expires_at")
   createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
 
   user User @relation(fields: [userId], references: [id])
 
@@ -441,4 +504,95 @@ model CostRecord {
   @@index([userId])
   @@index([createdAt])
   @@map("cost_records")
+}
+
+// ─── Agent Management ──────────────────────────────────────────
+
+model AgentDefinition {
+  id               String    @id @default(cuid())
+  userId           String    @map("user_id")
+  key              String                          // matches prompt-library key (e.g. AGENT_PRODUCT)
+  name             String                          // display name (e.g. "Sean")
+  persona          String                          // one-liner persona description
+  tier             AgentTier @default(AGENT)
+  systemPromptText String    @map("system_prompt_text") @db.Text
+  tools            Json      @default("[]")        // string[] of tool names
+  mdManifest       String?   @map("md_manifest") @db.Text  // optional .md capability doc
+  isBuiltIn        Boolean   @default(false) @map("is_built_in") // system agents can't be deleted
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@index([isActive])
+  @@map("agent_definitions")
+}
+
+// ─── Audit Log ─────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")          // null for unauthenticated attempts
+  userEmail  String?  @map("user_email")       // denormalised for fast display
+  action     String                            // e.g. GET /api/deals/:id
+  resource   String                            // e.g. "deal", "document", "memo"
+  resourceId String?  @map("resource_id")     // id of the accessed resource
+  method     String                            // HTTP method
+  path       String                            // full request path
+  statusCode Int      @map("status_code")
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  durationMs Int?     @map("duration_ms")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── Output Feedback ───────────────────────────────────────────
+
+model OutputFeedback {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  sessionId    String?  @map("session_id")
+  dealId       String?  @map("deal_id")
+  agentKey     String   @map("agent_key")     // e.g. AGENT_DUE_DILIGENCE
+  outputType   String   @map("output_type")  // e.g. "cim_analysis", "memo_section", "chat"
+  outputRef    String?  @map("output_ref")   // section name, analysis id, message id
+  rating       Int                            // 1=wrong, 2=ok, 3=good, 4=excellent
+  originalText String   @map("original_text") @db.Text
+  correctedText String? @map("corrected_text") @db.Text  // user's edited version
+  comment      String?                        // optional free-text note
+  learned      Boolean  @default(false)       // true once stored as PROCEDURAL memory
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([agentKey])
+  @@index([learned])
+  @@index([createdAt])
+  @@map("output_feedback")
+}
+
+// ─── Pitch Deck Template ───────────────────────────────────────
+
+model PitchDeckTemplate {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  name        String                         // original filename
+  pptxBuffer  Bytes    @map("pptx_buffer")  // raw .pptx binary
+  themeJson   Json     @map("theme_json")   // extracted colors + fonts
+  slotMap     Json     @map("slot_map")     // { exec_summary: 2, financials: 5, ... }
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("pitch_deck_templates")
 }
