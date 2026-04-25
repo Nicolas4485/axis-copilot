@@ -480,39 +480,43 @@ export async function handleAriaLiveWs(
     // Non-critical — Aria still works without the name / falls back to default voice
   }
 
-  // Build Aria's system instruction (memory + RAG pre-load + user identity)
-  const config = await aria.buildLiveSessionConfig(sessionId, userId, userName, session.clientId ?? null)
+  // ─── Open server-side Gemini Live connection (parallel with config build) ──
+  // Start TCP handshake immediately so it overlaps with memory assembly and
+  // history load — saves ~300ms per connection on cold start.
+  const geminiWs = new WebSocket(`${GEMINI_WS_URL}?key=${geminiKey}`)
 
-  // ─── Load recent conversation history ─────────────────────────────────────
-  // Always load the last 10 messages so Gemini has context even on fresh
-  // connections. On reconnect this is essential for continuity.
+  // Build config (memory-only, fast) + load history in parallel.
+  // RAG preload is returned as a background Promise inside config — does NOT
+  // block this await and will be injected after Gemini setup completes.
+  const [config, rawMessages] = await Promise.all([
+    aria.buildLiveSessionConfig(sessionId, userId, userName, session.clientId ?? null),
+    (async () => {
+      try {
+        return await prisma.message.findMany({
+          where: { sessionId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+          select: { role: true, content: true },
+        })
+      } catch {
+        return []
+      }
+    })(),
+  ])
+
   let historyContext = ''
-  try {
-    const recentMessages = await prisma.message.findMany({
-      where: { sessionId },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-      select: { role: true, content: true },
-    })
-    if (recentMessages.length > 0) {
-      const lines = recentMessages
-        .reverse()
-        .map((m) => `${m.role === 'USER' ? 'User' : 'Aria'}: ${m.content.slice(0, 500)}`)
-        .join('\n')
-      const label = isReconnect
-        ? 'Conversation history (reconnected session — continue naturally):'
-        : 'Recent conversation history:'
-      historyContext = `\n\n${label}\n${lines}`
-    }
-  } catch {
-    // Non-critical — session works without history
+  if (rawMessages.length > 0) {
+    const lines = rawMessages
+      .reverse()
+      .map((m) => `${m.role === 'USER' ? 'User' : 'Aria'}: ${m.content.slice(0, 500)}`)
+      .join('\n')
+    const label = isReconnect
+      ? 'Conversation history (reconnected session — continue naturally):'
+      : 'Recent conversation history:'
+    historyContext = `\n\n${label}\n${lines}`
   }
 
   const systemInstructionText = config.systemInstruction + historyContext
-
-  // ─── Open server-side Gemini Live connection ──────────────────────────────
-
-  const geminiWs = new WebSocket(`${GEMINI_WS_URL}?key=${geminiKey}`)
 
   let geminiReady = false
   // Timestamp of the last audio frame received from the client. Used by the
@@ -568,8 +572,10 @@ export async function handleAriaLiveWs(
 
   // ─── Gemini → client ──────────────────────────────────────────────────────
 
-  geminiWs.on('open', () => {
-    // Send the BidiGenerateContent setup message
+  // Send the BidiGenerateContent setup message.
+  // Since the WS was opened before config built, it may already be OPEN by now
+  // (TCP was faster than memory assembly). Handle both states.
+  const sendGeminiSetup = (): void => {
     geminiWs.send(JSON.stringify({
       setup: {
         model: `models/${config.model}`,
@@ -581,14 +587,18 @@ export async function handleAriaLiveWs(
           thinkingConfig: { thinkingLevel: 'minimal' },
         },
         systemInstruction: {
-          // Inject conversation history so Gemini has context from the start,
-          // including after reconnects caused by the session rotation.
           parts: [{ text: systemInstructionText }],
         },
         tools: GEMINI_LIVE_TOOLS,
       },
     }))
-  })
+  }
+
+  if (geminiWs.readyState === WebSocket.OPEN) {
+    sendGeminiSetup()
+  } else {
+    geminiWs.on('open', sendGeminiSetup)
+  }
 
   geminiWs.on('message', async (rawData) => {
     try {
@@ -611,6 +621,23 @@ export async function handleAriaLiveWs(
       geminiReady = true
       console.info(`[AriaLiveWS] Gemini ready — session=${sessionId} voice=${voiceName} model=${config.model}`)
       sendToClient({ type: 'ready' })
+
+      // ── Async RAG context injection ──────────────────────────────────────
+      // RAG preload was started in buildLiveSessionConfig() and has been
+      // running in the background during setup. Inject it now — typically
+      // arrives 200–800ms after this point, well before the first knowledge
+      // question. Simple greetings get answered immediately without waiting.
+      void config.ragPreload.then((ragCtx) => {
+        if (ragCtx && geminiWs.readyState === WebSocket.OPEN) {
+          geminiWs.send(JSON.stringify({
+            clientContent: {
+              turns: [{ role: 'user', parts: [{ text: `BACKGROUND CONTEXT — relevant knowledge for this session:\n${ragCtx}` }] }],
+              turnComplete: true,
+            },
+          }))
+          console.info('[AriaLiveWS] RAG context injected asynchronously')
+        }
+      })
 
       // ── Silence injector ────────────────────────────────────────────────
       // Gemini Live drops the session if it receives no audio activity. When

@@ -55,7 +55,7 @@ interface UseAriaLiveReturn {
 
 const MIC_RATE = 16000            // Gemini Live input expects 16 kHz PCM
 const PLAYBACK_RATE = 24000       // Gemini Live output is 24 kHz PCM
-const JITTER_BUFFER_S = 0.12      // 120 ms pre-buffer before starting playback
+const JITTER_BUFFER_S = 0.08      // 80 ms pre-buffer before starting playback
 const BACKPRESSURE_LIMIT = 65536  // 64 KB — skip mic frame if WS buffer exceeds this
 const SETUP_TIMEOUT = 30_000      // ms to wait for backend "ready" event (memory+RAG can take ~10-15s on cold Ollama)
 const MAX_RECONNECT_DELAY = 60_000

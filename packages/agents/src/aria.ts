@@ -71,6 +71,8 @@ export interface LiveSessionConfig {
   systemInstruction: string
   tools: ToolDefinition[]
   model: string
+  /** Background RAG preload — resolves after session setup, injected async */
+  ragPreload: Promise<string | null>
 }
 
 export class Aria {
@@ -629,30 +631,21 @@ export class Aria {
   ): Promise<LiveSessionConfig> {
     const resolvedClientId = clientId ?? null
 
-    // Run memory assembly and a lightweight RAG pre-load in parallel.
-    // Pre-loading injects the most relevant knowledge chunks into the system
-    // instruction so Aria can answer common questions without calling tools,
-    // which eliminates the latency hit on the first response.
-    const [assembled, preloadedKnowledge] = await Promise.all([
-      this.memory.buildAgentContext(sessionId, userId, resolvedClientId, ''),
-      (async (): Promise<string | null> => {
-        try {
-          const preload = await this.rag.query(
-            `background context key facts ${userName ?? ''}`,
-            userId,
-            resolvedClientId
-          )
-          // Cap at 2500 chars to keep system instruction within token limits
-          return preload.context ? preload.context.slice(0, 2500) : null
-        } catch {
-          return null
-        }
-      })(),
-    ])
+    // Memory assembly is fast (50–200ms) — await it so the system instruction
+    // includes session context from the start.
+    const assembled = await this.memory.buildAgentContext(sessionId, userId, resolvedClientId, '')
+
+    // RAG preload is slow (500–2000ms vector search) — start it in the background.
+    // The caller injects the result via clientContent after Gemini setup completes,
+    // so it never blocks the connection handshake.
+    const ragPreload: Promise<string | null> = this.rag
+      .query(`background context key facts ${userName ?? ''}`, userId, resolvedClientId)
+      .then((r) => (r.context ? r.context.slice(0, 2500) : null))
+      .catch(() => null)
 
     const systemInstruction = buildAriaVoiceSystemInstruction(
       assembled.text,
-      preloadedKnowledge,
+      null,
       userName
     )
 
@@ -660,6 +653,7 @@ export class Aria {
       systemInstruction,
       tools: ARIA_TOOL_DECLARATIONS,
       model: 'gemini-3.1-flash-live-preview',
+      ragPreload,
     }
   }
 
