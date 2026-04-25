@@ -480,10 +480,28 @@ export async function handleAriaLiveWs(
     // Non-critical — Aria still works without the name / falls back to default voice
   }
 
+  // sendToClient is defined here — before any await — so the pre-setup error
+  // handler below can reference it safely.
+  const sendToClient = (payload: Record<string, unknown>): void => {
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify(payload))
+    }
+  }
+
   // ─── Open server-side Gemini Live connection (parallel with config build) ──
   // Start TCP handshake immediately so it overlaps with memory assembly and
   // history load — saves ~300ms per connection on cold start.
   const geminiWs = new WebSocket(`${GEMINI_WS_URL}?key=${geminiKey}`)
+
+  // Attach error handler BEFORE the first await.
+  // Without this, any Gemini connection failure (bad API key, network error,
+  // rate limit) during config build fires an unhandled 'error' event that
+  // crashes the Node.js process.
+  geminiWs.on('error', (err) => {
+    console.error('[AriaLiveWS] Gemini connection error:', (err as Error).message)
+    sendToClient({ type: 'error', message: 'Voice connection failed — Gemini error' })
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.close(4503, 'Gemini error')
+  })
 
   // Build config (memory-only, fast) + load history in parallel.
   // RAG preload is returned as a background Promise inside config — does NOT
@@ -528,12 +546,6 @@ export async function handleAriaLiveWs(
   // flood burst when setupComplete arrives after a slow Gemini handshake.
   const MAX_PENDING_FRAMES = 50
   const pendingFrames: Buffer[] = []
-
-  const sendToClient = (payload: Record<string, unknown>): void => {
-    if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(JSON.stringify(payload))
-    }
-  }
 
   // ─── Timer handles — declared with let so teardownTimers can reference them
   //     even though they are assigned after teardownTimers is defined. ─────────
