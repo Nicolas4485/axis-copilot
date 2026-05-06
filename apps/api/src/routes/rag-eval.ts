@@ -8,7 +8,7 @@ import { InferenceEngine } from '@axis/inference'
 import { RAGEngine } from '@axis/rag'
 import { RagEvaluator } from '../../../../packages/rag/src/eval/rag-evaluator.js'
 import type { EvalResult } from '../../../../packages/rag/src/eval/rag-evaluator.js'
-import type { QuestionCategory } from '../../../../packages/rag/src/eval/test-set.js'
+import type { QuestionCategory, AgentAlias } from '../../../../packages/rag/src/eval/test-set.js'
 
 export const ragEvalRouter = Router()
 
@@ -36,9 +36,10 @@ ragEvalRouter.post('/', async (req: Request, res: Response): Promise<void> => {
   let engine: InferenceEngine | null = null
 
   try {
-    const { clientId, categories, maxQuestions } = req.body as {
+    const { clientId, categories, agentTarget, maxQuestions } = req.body as {
       clientId?: string
       categories?: QuestionCategory[]
+      agentTarget?: AgentAlias
       maxQuestions?: number
     }
 
@@ -51,8 +52,9 @@ ragEvalRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     const result = await evaluator.run({
       userId,
       clientId: clientId ?? null,
-      ...(categories ? { categories } : {}),
-      maxQuestions: maxQuestions ?? 60,
+      ...(categories    ? { categories }           : {}),
+      ...(agentTarget   ? { agentTarget }          : {}),
+      maxQuestions: maxQuestions ?? 150,
       onProgress: (done, total, question) => {
         sendEvent({
           type: 'progress',

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// eval:rag CLI — runs the RAG evaluation framework
+// eval:rag CLI — runs the RAGAS-style RAG evaluation framework
 //
 // Usage:
-//   pnpm eval:rag                          # all categories, all questions
-//   pnpm eval:rag --category financial-figures
+//   pnpm eval:rag                              # all categories, all agents
+//   pnpm eval:rag --agent mel                  # only Mel's competitive-intel questions
+//   pnpm eval:rag --category financial-figures # filter by category
 //   pnpm eval:rag --max 10 --userId <id>
-//   pnpm eval:rag --ci                     # exit 1 if targets not met
+//   pnpm eval:rag --ci                         # exit 1 if targets not met
 //
 // Required env: DATABASE_URL, ANTHROPIC_API_KEY, REDIS_URL, ...
 // Optional env: EVAL_USER_EMAIL (looks up userId by email)
@@ -14,7 +15,7 @@ import { PrismaClient } from '@prisma/client'
 import { InferenceEngine } from '@axis/inference'
 import { RAGEngine } from '../index.js'
 import { RagEvaluator, THRESHOLDS } from './rag-evaluator.js'
-import type { QuestionCategory } from './test-set.js'
+import type { QuestionCategory, AgentAlias } from './test-set.js'
 
 const prisma = new PrismaClient()
 
@@ -22,6 +23,7 @@ const prisma = new PrismaClient()
 
 function parseArgs(): {
   category?: QuestionCategory
+  agentTarget?: AgentAlias
   max?: number
   ci: boolean
   userId?: string
@@ -31,6 +33,7 @@ function parseArgs(): {
   const args = process.argv.slice(2)
   const result: {
     category?: QuestionCategory
+    agentTarget?: AgentAlias
     max?: number
     ci: boolean
     userId?: string
@@ -44,8 +47,11 @@ function parseArgs(): {
       case '--category':
         result.category = args[++i] as QuestionCategory
         break
+      case '--agent':
+        result.agentTarget = args[++i] as AgentAlias
+        break
       case '--max':
-        result.max = parseInt(args[++i] ?? '60', 10)
+        result.max = parseInt(args[++i] ?? '150', 10)
         break
       case '--ci':
         result.ci = true
@@ -110,7 +116,6 @@ async function main() {
       }
       userId = user.id
     } else {
-      // Use first user in the database
       const user = await prisma.user.findFirst({ select: { id: true, email: true } })
       if (!user) {
         console.error('No users found in database. Run seed first.')
@@ -122,29 +127,29 @@ async function main() {
   }
 
   const engine = new InferenceEngine()
-  const rag = new RAGEngine({ engine, prisma })
-
+  const rag    = new RAGEngine({ engine, prisma })
   const evaluator = new RagEvaluator({ rag, engine, prisma })
 
   console.log(`\nRunning evaluation:`)
   console.log(`  User:       ${userId}`)
   console.log(`  Client:     ${args.clientId ?? 'all'}`)
+  console.log(`  Agent:      ${args.agentTarget ?? 'all'}`)
   console.log(`  Category:   ${args.category ?? 'all'}`)
-  console.log(`  Max Q:      ${args.max ?? 60}`)
-  console.log(`\nTargets:`)
-  console.log(`  Context Precision:    ${THRESHOLDS.contextPrecision * 100}%`)
+  console.log(`  Max Q:      ${args.max ?? 150}`)
+  console.log(`\nTargets (LLM-judge metrics):`)
+  console.log(`  Context Quality:      ${THRESHOLDS.contextQuality * 100}%`)
   console.log(`  Answer Faithfulness:  ${THRESHOLDS.answerFaithfulness * 100}%`)
   console.log(`  Answer Relevance:     ${THRESHOLDS.answerRelevance * 100}%`)
+  console.log(`  Context Recall:       ${THRESHOLDS.contextRecall * 100}% (when ground truth present)`)
   console.log('\n' + '─'.repeat(50))
 
-  let done = 0
   const results = await evaluator.run({
     userId,
     clientId: args.clientId ?? null,
-    ...(args.category ? { categories: [args.category] } : {}),
-    ...(args.max !== undefined ? { maxQuestions: args.max } : {}),
+    ...(args.category    ? { categories:   [args.category]     } : {}),
+    ...(args.agentTarget ? { agentTarget:  args.agentTarget    } : {}),
+    ...(args.max !== undefined ? { maxQuestions: args.max       } : {}),
     onProgress: (d, total, question) => {
-      done = d
       const pct = Math.round((d / total) * 100)
       process.stdout.write(`\r  [${pct.toString().padStart(3)}%] ${question.substring(0, 60).padEnd(60)}`)
     },
@@ -158,9 +163,12 @@ async function main() {
   console.log(`  Questions:   ${results.totalQuestions} evaluated in ${(results.durationMs / 1000).toFixed(1)}s`)
   console.log(`  Pass rate:   ${fmt(results.passRate, 0.7)} of questions passed all thresholds`)
   console.log('')
-  console.log(`  Context Precision:   ${fmt(results.contextPrecision, THRESHOLDS.contextPrecision)}  ${bar(results.contextPrecision)}`)
+  console.log(`  Context Quality:     ${fmt(results.contextQuality, THRESHOLDS.contextQuality)}  ${bar(results.contextQuality)}`)
   console.log(`  Ans Faithfulness:    ${fmt(results.answerFaithfulness, THRESHOLDS.answerFaithfulness)}  ${bar(results.answerFaithfulness)}`)
   console.log(`  Ans Relevance:       ${fmt(results.answerRelevance, THRESHOLDS.answerRelevance)}  ${bar(results.answerRelevance)}`)
+  if (results.contextRecall !== undefined) {
+    console.log(`  Context Recall:      ${fmt(results.contextRecall, THRESHOLDS.contextRecall)}  ${bar(results.contextRecall)}`)
+  }
 
   if (results.categories.length > 0) {
     console.log('\n' + '─'.repeat(50))
@@ -168,16 +176,19 @@ async function main() {
     for (const cat of results.categories) {
       if (cat.count === 0) continue
       console.log(`\n  ${cat.category} (${cat.count} questions)`)
-      console.log(`    Context Precision:   ${fmt(cat.contextPrecision, THRESHOLDS.contextPrecision)}`)
+      console.log(`    Context Quality:     ${fmt(cat.contextQuality, THRESHOLDS.contextQuality)}`)
       console.log(`    Ans Faithfulness:    ${fmt(cat.answerFaithfulness, THRESHOLDS.answerFaithfulness)}`)
       console.log(`    Ans Relevance:       ${fmt(cat.answerRelevance, THRESHOLDS.answerRelevance)}`)
+      if (cat.contextRecall !== undefined) {
+        console.log(`    Context Recall:      ${fmt(cat.contextRecall, THRESHOLDS.contextRecall)}`)
+      }
     }
   }
 
   // Show failing questions
   const failing = results.questions.filter(
     (q) =>
-      q.contextPrecision < THRESHOLDS.contextPrecision ||
+      q.contextQuality < THRESHOLDS.contextQuality ||
       q.answerFaithfulness < THRESHOLDS.answerFaithfulness ||
       q.answerRelevance < THRESHOLDS.answerRelevance
   )
@@ -186,8 +197,8 @@ async function main() {
     console.log('\n' + '─'.repeat(50))
     console.log(`${BOLD}FAILING QUESTIONS (${failing.length})${RESET}`)
     for (const q of failing.slice(0, 10)) {
-      console.log(`\n  [${q.id}] ${q.question.substring(0, 80)}`)
-      console.log(`    Context: ${fmt(q.contextPrecision, THRESHOLDS.contextPrecision)}  Faithful: ${fmt(q.answerFaithfulness, THRESHOLDS.answerFaithfulness)}  Relevant: ${fmt(q.answerRelevance, THRESHOLDS.answerRelevance)}`)
+      console.log(`\n  [${q.id}] [${q.agentTarget}] ${q.question.substring(0, 80)}`)
+      console.log(`    Quality: ${fmt(q.contextQuality, THRESHOLDS.contextQuality)}  Faithful: ${fmt(q.answerFaithfulness, THRESHOLDS.answerFaithfulness)}  Relevant: ${fmt(q.answerRelevance, THRESHOLDS.answerRelevance)}`)
       if (q.error) console.log(`    ${RED}Error: ${q.error}${RESET}`)
       else console.log(`    Answer: ${q.answer.substring(0, 120)}`)
     }
