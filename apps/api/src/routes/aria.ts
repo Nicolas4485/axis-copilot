@@ -12,6 +12,7 @@ import { InferenceEngine } from '@axis/inference'
 import { AriaTextAgent } from '@axis/sdk-agents'
 import { messagesRateLimit } from '../middleware/auth.js'
 import { isExtensionConnected } from '../lib/extension-ws-server.js'
+import { registerSessionEmit, unregisterSessionEmit, resolveConfirmation, type ConfirmationDecision } from '../lib/confirmation-bridge.js'
 
 const engine = new InferenceEngine()
 const aria = new Aria({ engine, prisma })
@@ -159,6 +160,36 @@ ariaRouter.post('/session-token', sessionTokenRateLimit, async (req: Request, re
 // ─── POST /api/aria/tool-call ────────────────────────────────────
 // Execute a tool during a live session (function call relay)
 
+/**
+ * POST /api/aria/tool-confirmation
+ * User responds Approve/Deny to a tool_confirmation prompt the agent surfaced.
+ * The confirmation-bridge resolves the matching pending entry, which unblocks
+ * browser-rpc.callBrowserCommand() inside the agent's tool loop.
+ *
+ * Body: { requestId: string; decision: 'approve' | 'deny' }
+ */
+ariaRouter.post('/tool-confirmation', async (req: Request, res: Response) => {
+  const { requestId, decision } = req.body as { requestId?: unknown; decision?: unknown }
+  if (typeof requestId !== 'string' || (decision !== 'approve' && decision !== 'deny')) {
+    res.status(400).json({
+      error: 'requestId (string) and decision ("approve" | "deny") are required',
+      code: 'VALIDATION_ERROR',
+      requestId: req.requestId,
+    })
+    return
+  }
+  const ok = resolveConfirmation(requestId, decision as ConfirmationDecision)
+  if (!ok) {
+    res.status(404).json({
+      error: 'Confirmation request not found, already answered, or timed out',
+      code: 'NOT_FOUND',
+      requestId: req.requestId,
+    })
+    return
+  }
+  res.json({ ok: true, requestId: req.requestId })
+})
+
 ariaRouter.post('/tool-call', async (req: Request, res: Response) => {
   try {
     const parsed = toolCallSchema.safeParse(req.body)
@@ -288,7 +319,10 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
   })
 
   let closed = false
-  req.on('close', () => { closed = true })
+  req.on('close', () => {
+    closed = true
+    unregisterSessionEmit(sessionId)
+  })
 
   // Tracks whether we've already emitted a browser_required event for this
   // request so the user doesn't see duplicate cards when the agent retries
@@ -331,6 +365,15 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
       }
     }
   }
+
+  // ── Cross-domain confirmation bridge ────────────────────────────────────
+  // Register an emit callback the bridge uses when a gated tool call needs
+  // user approval. The bridge fires `tool_confirmation` over our SSE; the
+  // user's Approve/Deny POST to /api/aria/tool-confirmation resolves it.
+  // Cleanup is wired into req.on('close') above.
+  registerSessionEmit(sessionId, (event) => {
+    sendEvent('tool_confirmation', event as unknown as Record<string, unknown>)
+  })
 
   // ── Browser-tool readiness ──────────────────────────────────────────────
   // We previously fired browser_required upfront based on a regex over the

@@ -559,7 +559,31 @@ export interface SSEEvent {
       | 'browser_required'   // Aria signals the user's request needs the AXIS
                              // extension and it's currently disconnected.
                              // Payload: { reason: string, suggestedUrl: string | null }
+      | 'tool_confirmation'  // Cross-domain gate flagged a WRITE/SENSITIVE
+                             // action; agent is paused awaiting Approve/Deny.
+                             // Payload: { requestId, command, targetUrl, gate, userMessage }
   [key: string]: unknown
+}
+
+/**
+ * Send the user's Approve/Deny decision for a tool_confirmation prompt.
+ * Resolves with the API's ack. The agent's tool loop unblocks server-side
+ * once this round-trip completes — no client-side polling needed.
+ */
+export async function respondToToolConfirmation(args: {
+  requestId: string
+  decision: 'approve' | 'deny'
+}): Promise<{ ok: boolean }> {
+  const res = await fetch(`${API_BASE}/api/aria/tool-confirmation`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(args),
+  })
+  if (!res.ok) {
+    throw new Error(`tool-confirmation failed: HTTP ${res.status}`)
+  }
+  return (await res.json()) as { ok: boolean }
 }
 
 export function streamMessage(

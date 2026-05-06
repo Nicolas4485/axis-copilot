@@ -24,6 +24,7 @@
 import { sendCommandToExtension, isExtensionConnected, type ResponseMessage } from './extension-ws-server.js'
 import { sanitizeToolResult, type SanitizeFlag } from './tool-result-sanitizer.js'
 import { evaluateAction, recordProvenance, type CapabilityClass, type GateDecision } from './cross-domain-gate.js'
+import { requestConfirmation } from './confirmation-bridge.js'
 import { prisma } from './prisma.js'
 
 // ─── Capability lookup table ──────────────────────────────────────────────
@@ -120,11 +121,31 @@ export async function callBrowserCommand(call: BrowserRpcCall): Promise<BrowserR
     }
 
     if (gateDecision.action === 'require_confirmation') {
-      // We DON'T call the extension. Return a confirmation requirement to the
-      // agent; the agent surfaces it to the user; the user approves; the agent
-      // re-calls with confirmed=true (handled by a higher layer not built yet).
-      await audit({ ...call, capability, gate: gateDecision, ok: false, error: 'Pending user confirmation' })
-      return { ok: false, gate: gateDecision, requiresConfirmation: true, error: gateDecision.userMessage }
+      // Pause and ask the user. The confirmation-bridge fires a
+      // tool_confirmation SSE event over the active aria SSE stream
+      // (registered by routes/aria.ts at request start) and awaits the
+      // user's Approve/Deny. Times out after 5 minutes → deny.
+      const decision = await requestConfirmation({
+        sessionId,
+        command: call.command,
+        payload: call.payload ?? {},
+        gate: gateDecision,
+      })
+
+      if (decision === 'deny') {
+        await audit({ ...call, capability, gate: gateDecision, ok: false, error: 'User denied confirmation' })
+        return {
+          ok: false,
+          gate: gateDecision,
+          requiresConfirmation: true,
+          error: 'The user declined to approve this action.',
+        }
+      }
+      // decision === 'approve' → fall through and execute the command.
+      // We deliberately do NOT re-evaluate the gate here: the user already
+      // saw the same gate message and approved, so re-checking would just
+      // ask again forever. Audit records the approval explicitly.
+      await audit({ ...call, capability, gate: gateDecision, ok: true, error: 'User approved (proceeding)' })
     }
   }
 
