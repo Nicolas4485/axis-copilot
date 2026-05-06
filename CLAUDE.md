@@ -246,3 +246,75 @@ Extension routes at `/api/extension/*` are mounted **before** global `authentica
   - Audit log, demo seeder, pitch deck generator, style indexing, feedback loop,
     sector benchmarks, financial extraction, management scoring, RAG eval framework
 - **Phase 4** (Team Collaboration — multi-user, SSO): Planned post-hire
+
+## BROWSER AGENT WORK STATUS (resume here next session)
+
+### What's working today (committed or staged, all tested)
+
+**Read everything autonomously:**
+- All agents (Aria, Mel, Sean, Kevin, Anjie, Intake, Alex) have `browser_*` tools.
+- Aria's tool set: `browser_state`, `browser_visit`, `browser_scrape`, `browser_screenshot`.
+- Specialists also get `browser_click`, `browser_fill`, `browser_scroll` for interactions.
+- Agents can call these autonomously over the WS — no UI involvement.
+- For Drive content: `read_drive_document` (Drive API — fast and clean).
+- For Google Docs specifically: an **export-endpoint recipe** in `axis-ext/content/recipes/google-docs.js` that bypasses the Kix SVG renderer. Used by both side-panel chat (`getActiveTabContext`) and the WS path.
+
+**Cross-domain confirmation gate:**
+- Server-side `confirmation-bridge.ts` pauses tool execution awaiting Approve/Deny.
+- Client-side renders an orange "Confirmation needed" card in chat with Approve/Deny buttons.
+- POST `/api/aria/tool-confirmation` resolves the bridge.
+- Wired through `browser-rpc.ts` for any WRITE-class tool.
+
+**Aria's offline-fallback affordance:**
+- When a `browser_*` tool fails because the extension WS is disconnected, the SSE stream emits `browser_required` with the URL the agent tried.
+- Chat UI renders a `<ResearchPrompt>` card pre-filled with that URL.
+- User clicks Research, runs the work locally, result drops into the input box.
+
+**Agent capability sync:**
+- Both source-of-truth places updated:
+  - Hardcoded specialist configs in `packages/agents/src/specialists/*.ts`
+  - `BUILT_IN_AGENTS` array in `apps/api/src/routes/agents.ts` (powers `/agents` UI page)
+- Custom agents created via `/agents` UI can pick `browser_*` tools from the registered list.
+
+### What's BLOCKED (the Kix dead-end discovered Day 2)
+
+**Editing Google Docs via DOM is not feasible.** Google Docs filters synthetic events:
+- Synthetic `KeyboardEvent` (Ctrl+H to open Find-and-Replace) → ignored.
+- Synthetic `MouseEvent` (`.click()` on Edit menu) → ignored.
+- Even direct `el.click()` on `#docs-edit-menu` → no menu opens.
+
+The Kix recipe code exists in `axis-ext/content/recipes/google-docs.js` (`applyEdit`, `_openFindReplace`, etc.) but doesn't function. Comment-out or remove next session — the read path stays.
+
+### The pending decision (PICK FIRST NEXT SESSION)
+
+How to enable WRITE actions that work:
+
+**Option 1 — Drive API write only.** Upgrade OAuth scope from `drive.readonly` to `drive`. Add `update_drive_document_text`, `apply_drive_suggestion` tools. Aria edits Docs/Sheets via Google's official API (atomic, fast, no UI breakage).
+  - Wins: clean architecture, no banner, fast, reliable.
+  - Loses: only works for Drive content. LinkedIn/Miro/Mixpanel editing impossible.
+
+**Option 2 — chrome.debugger universal.** Add `"debugger"` to manifest, use Chrome DevTools Protocol to dispatch genuinely trusted events. Universal write across all sites.
+  - Wins: works on LinkedIn, Miro, Mixpanel, Notion, anywhere.
+  - Loses: yellow non-dismissible Chrome banner ("AXIS Copilot started debugging this browser") every session. Slower than API. Brittle when Docs UI redesigns.
+
+**Option 3 (RECOMMENDED) — Both layered.** Drive API for Drive content, chrome.debugger for everything else. Banner only appears when chrome.debugger is actively attached (non-Drive operations).
+  - Wins: each tool used for what it's best at. Full vision unblocked.
+  - Cost: more files (~3 hours of work to land both).
+
+User's stated vision (Aria editing CV, sending LinkedIn messages, drawing Miro flowcharts, running Mixpanel queries) requires Option 3 to fully realize. Tonight we paused at the decision point.
+
+### Files staged but not yet committed in axis-copilot
+- `apps/api/src/routes/agents.ts` — BUILT_IN_AGENTS sync (browser tools added to all 6 agents)
+- `packages/agents/src/specialists/{intake,process,stakeholder,due-diligence}-agent.ts` — browser tools added
+- `packages/agents/src/aria-prompt.ts` — browser tools added to ARIA_TOOL_DECLARATIONS + system-prompt rule #12
+- `apps/api/src/lib/{confirmation-bridge,browser-rpc}.ts` — confirmation flow
+- `apps/api/src/routes/aria.ts` — bridge registration + POST /tool-confirmation endpoint + browser_required emission
+- `apps/web/src/lib/api.ts` — SSEEvent types + respondToToolConfirmation
+- `apps/web/src/app/session/[id]/page.tsx` — confirmation card + browser-required card + scroll-on-poll fix
+
+### Files staged but not yet committed in axis-ext
+- `content/recipes/google-docs.js` — the recipe (read works; edit code present but non-functional)
+- `content/agent-interactor.js` — snapshot routes to Google Docs recipe
+- `background/browser-controller.js` — injects recipe alongside agent-interactor
+- `background/service-worker.js` — getActiveTabContext routes to recipe
+- `background/axis-bridge.js` — getActiveTabContext routes to recipe
