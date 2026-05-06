@@ -7,15 +7,16 @@ import { clients, knowledge } from '@/lib/api'
 import Link from 'next/link'
 import {
   Building2, Globe, Users as UsersIcon, Edit, MessageSquare,
-  FileText, HardDrive, Network, ArrowUpRight,
+  FileText, HardDrive, Network, ArrowUpRight, AlertTriangle,
 } from 'lucide-react'
 
-type TabId = 'overview' | 'stakeholders' | 'knowledge' | 'drive' | 'sessions'
+type TabId = 'overview' | 'stakeholders' | 'knowledge' | 'conflicts' | 'drive' | 'sessions'
 
 const TABS: Array<{ id: TabId; label: string; icon: React.ElementType }> = [
   { id: 'overview', label: 'Overview', icon: Building2 },
   { id: 'stakeholders', label: 'Stakeholders', icon: UsersIcon },
   { id: 'knowledge', label: 'Knowledge', icon: FileText },
+  { id: 'conflicts', label: 'Conflicts', icon: AlertTriangle },
   { id: 'drive', label: 'Drive', icon: HardDrive },
   { id: 'sessions', label: 'Sessions', icon: MessageSquare },
 ]
@@ -51,8 +52,10 @@ export default function ClientProfilePage() {
   const { data: conflictData } = useQuery({
     queryKey: ['conflicts', id],
     queryFn: () => knowledge.getConflicts(id),
-    enabled: activeTab === 'knowledge',
+    staleTime: 60_000,
   })
+
+  const unresolvedCount = conflictData?.conflicts.filter((c) => c.status === 'UNRESOLVED').length ?? 0
 
   if (!client) {
     return (
@@ -105,6 +108,7 @@ export default function ClientProfilePage() {
       <div className="flex gap-0 border-b border-[var(--border)]">
         {TABS.map((t) => {
           const Icon = t.icon
+          const showBadge = t.id === 'conflicts' && unresolvedCount > 0
           return (
             <button
               key={t.id}
@@ -113,6 +117,9 @@ export default function ClientProfilePage() {
             >
               <Icon size={14} />
               {t.label}
+              {showBadge && (
+                <span className="badge badge-red text-[10px] px-1.5 py-0">{unresolvedCount}</span>
+              )}
             </button>
           )
         })}
@@ -220,6 +227,28 @@ export default function ClientProfilePage() {
                 : 'No conflicts detected.'}
             </p>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'conflicts' && (
+        <div className="card text-center py-12 space-y-4">
+          <AlertTriangle size={24} className={unresolvedCount > 0 ? 'text-[var(--warning)] mx-auto' : 'text-[var(--text-muted)] mx-auto'} />
+          <div>
+            <p className="text-sm font-medium text-[var(--text-primary)]">
+              {unresolvedCount > 0
+                ? `${unresolvedCount} unresolved conflict${unresolvedCount !== 1 ? 's' : ''} detected`
+                : 'No unresolved conflicts'}
+            </p>
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              {unresolvedCount > 0
+                ? 'Review and resolve contradictions found across your uploaded documents.'
+                : 'All detected conflicts have been resolved.'}
+            </p>
+          </div>
+          <Link href={`/clients/${id}/conflicts`}
+                className="btn-secondary inline-flex items-center gap-2 text-sm">
+            View All Conflicts
+          </Link>
         </div>
       )}
 

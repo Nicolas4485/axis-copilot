@@ -1,8 +1,8 @@
 'use client'
 
-// AriaControls — mic, camera, screen share, and connection controls
+// AriaControls — mic, camera, screen share, and connection controls for live sessions
 
-import { Mic, MicOff, Camera, CameraOff, Monitor, MonitorOff, PhoneOff, Wifi, WifiOff } from 'lucide-react'
+import { Mic, MicOff, Camera, CameraOff, Monitor, MonitorOff, PhoneOff, Wifi } from 'lucide-react'
 
 interface AriaControlsProps {
   isConnected: boolean
@@ -33,10 +33,14 @@ export function AriaControls({
     return (
       <button
         onClick={onConnect}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--gold)] text-black font-mono text-sm hover:opacity-90 transition-opacity"
+        aria-label="Start live session with Aria"
+        className="flex items-center gap-2 px-5 py-2 rounded-full
+                   bg-[var(--gold)] text-[var(--bg-primary)] font-mono text-sm font-medium
+                   hover:bg-[var(--gold-dim)] transition-all duration-200"
+        style={{ boxShadow: '0 0 16px rgba(200,169,110,0.2)' }}
       >
-        <Wifi className="w-4 h-4" />
-        Talk to Aria
+        <Wifi className="w-3.5 h-3.5" />
+        Connect
       </button>
     )
   }
@@ -44,59 +48,84 @@ export function AriaControls({
   return (
     <div className="flex items-center gap-2">
       {/* Mic toggle */}
-      <button
+      <ControlButton
         onClick={onToggleMic}
-        className={`p-2 rounded-lg transition-colors ${
-          isMicOn
-            ? 'bg-[var(--gold)] text-black'
-            : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-        }`}
-        title={isMicOn ? 'Mute microphone' : 'Unmute microphone'}
+        active={isMicOn}
+        activeClass="bg-[var(--gold)] text-[var(--bg-primary)]"
+        label={isMicOn ? 'Mute microphone' : 'Unmute microphone'}
       >
-        {isMicOn ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-      </button>
+        {isMicOn ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+      </ControlButton>
 
       {/* Camera toggle */}
-      <button
+      <ControlButton
         onClick={onToggleCamera}
-        className={`p-2 rounded-lg transition-colors ${
-          isCameraOn
-            ? 'bg-blue-500 text-white'
-            : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-        }`}
-        title={isCameraOn ? 'Turn off camera' : 'Turn on camera'}
+        active={isCameraOn}
+        activeClass="bg-blue-500/80 text-white"
+        label={isCameraOn ? 'Turn off camera' : 'Turn on camera'}
       >
-        {isCameraOn ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
-      </button>
+        {isCameraOn ? <Camera className="w-3.5 h-3.5" /> : <CameraOff className="w-3.5 h-3.5" />}
+      </ControlButton>
 
       {/* Screen share toggle */}
-      <button
+      <ControlButton
         onClick={isScreenSharing ? onStopScreenShare : onStartScreenShare}
-        className={`p-2 rounded-lg transition-colors ${
-          isScreenSharing
-            ? 'bg-emerald-500 text-white'
-            : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-        }`}
-        title={isScreenSharing ? 'Stop screen share' : 'Share screen'}
+        active={isScreenSharing}
+        activeClass="bg-emerald-500/80 text-white"
+        label={isScreenSharing ? 'Stop screen share' : 'Share screen'}
       >
-        {isScreenSharing ? <Monitor className="w-4 h-4" /> : <MonitorOff className="w-4 h-4" />}
-      </button>
+        {isScreenSharing ? <Monitor className="w-3.5 h-3.5" /> : <MonitorOff className="w-3.5 h-3.5" />}
+      </ControlButton>
+
+      {/* Separator */}
+      <div className="w-px h-5 bg-[var(--border)]" />
 
       {/* Disconnect */}
       <button
         onClick={onDisconnect}
-        className="p-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
-        title="End live session"
+        aria-label="End live session"
+        className="p-2 rounded-full bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"
       >
-        <PhoneOff className="w-4 h-4" />
+        <PhoneOff className="w-3.5 h-3.5" />
       </button>
 
-      {/* Connection indicator */}
-      <div className="flex items-center gap-1 text-xs text-emerald-400 font-mono ml-2">
-        <WifiOff className="w-3 h-3 hidden" />
-        <Wifi className="w-3 h-3" />
-        <span>Live</span>
+      {/* Live indicator */}
+      <div className="flex items-center gap-1.5 ml-1 px-2.5 py-1 rounded-full
+                      bg-emerald-500/10 border border-emerald-500/20">
+        <span className="live-dot" />
+        <span className="text-[10px] font-mono tracking-widest text-emerald-400 uppercase">Live</span>
       </div>
     </div>
+  )
+}
+
+/* ── Internal helpers ────────────────────────────────────────────────────── */
+
+function ControlButton({
+  children,
+  onClick,
+  active,
+  activeClass,
+  label,
+}: {
+  children: React.ReactNode
+  onClick: () => void
+  active: boolean
+  activeClass: string
+  label: string
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`p-2 rounded-full transition-all duration-200 ${
+        active
+          ? activeClass
+          : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+      }`}
+    >
+      {children}
+    </button>
   )
 }

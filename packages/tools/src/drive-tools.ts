@@ -4,7 +4,7 @@
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
 import { PrismaClient } from '@prisma/client'
 import { getValidToken } from './google/auth.js'
-import { listFiles, downloadFile } from './google/drive.js'
+import { listFiles, getFileMetadata, downloadFileAuto } from './google/drive.js'
 
 let _prisma: PrismaClient | null = null
 function getPrisma(): PrismaClient {
@@ -117,11 +117,32 @@ export async function readDriveDocument(
 
   try {
     const token = await getDriveToken(context.userId)
-    const buf = await downloadFile(token, fileId, 'text/plain')
+    const metadata = await getFileMetadata(token, fileId)
+    const { content: buf, contentType } = await downloadFileAuto(token, fileId, metadata.mimeType)
+
+    // Run binary/structured formats through their parser to get readable text.
+    const { getParser } = await import('@axis/ingestion')
+    const parser = getParser(contentType)
+    if (parser) {
+      const parsed = await parser.parse(buf, metadata.name)
+      return {
+        success: true,
+        data: {
+          fileId,
+          name: metadata.name,
+          content: parsed.text.slice(0, 15_000),
+          sections: parsed.sections.length,
+          wordCount: parsed.metadata.wordCount,
+          truncated: parsed.text.length > 15_000,
+        },
+        durationMs: Date.now() - start,
+      }
+    }
+
     const content = buf.toString('utf8').slice(0, 15_000)
     return {
       success: true,
-      data: { fileId, content, truncated: buf.length > 15_000 },
+      data: { fileId, name: metadata.name, content, truncated: buf.length > 15_000 },
       durationMs: Date.now() - start,
     }
   } catch (err) {

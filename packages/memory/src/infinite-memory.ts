@@ -14,7 +14,7 @@ import { InferenceEngine } from '@axis/inference'
 import { Neo4jClient, GraphOperations } from '@axis/knowledge-graph'
 
 /** Memory tier identifiers */
-export type MemoryTier = 'WORKING' | 'SUMMARY' | 'EPISODIC' | 'SEMANTIC' | 'ARCHIVAL'
+export type MemoryTier = 'WORKING' | 'SUMMARY' | 'EPISODIC' | 'SEMANTIC' | 'ARCHIVAL' | 'PROCEDURAL'
 
 /** A working memory entry */
 export interface WorkingMemoryEntry {
@@ -57,11 +57,12 @@ export interface AssembledContext {
 }
 
 const TIER_BUDGETS = {
-  WORKING: 10000,   // Last 50 messages – enough for deep brainstorming
-  SUMMARY: 2000,    // Cross-session context
-  EPISODIC: 2000,   // Past interactions
-  SEMANTIC: 1000,   // Graph context
-  ARCHIVAL: 500,    // Referenced archives
+  WORKING: 10000,    // Last 50 messages – enough for deep brainstorming
+  SUMMARY: 2000,     // Cross-session context
+  EPISODIC: 2000,    // Past interactions
+  SEMANTIC: 1000,    // Graph context
+  ARCHIVAL: 500,     // Referenced archives
+  PROCEDURAL: 1500,  // User corrections and positive examples
 } as const
 
 const TOTAL_BUDGET = 15000
@@ -171,6 +172,17 @@ export class InfiniteMemory {
     if (archiveNote) {
       tiersUsed.push('ARCHIVAL')
       parts.push(`<ARCHIVES>\n${archiveNote}\n</ARCHIVES>`)
+    }
+
+    // Tier 6: Procedural – user corrections and positive examples
+    try {
+      const proceduralText = await this.getProcedualMemories(userId)
+      if (proceduralText) {
+        tiersUsed.push('PROCEDURAL')
+        parts.push(`<PAST_CORRECTIONS>\n${proceduralText}\n</PAST_CORRECTIONS>`)
+      }
+    } catch {
+      // Procedural memory unavailable – continue without it
     }
 
     const text = parts.join('\n\n')
@@ -428,16 +440,18 @@ export class InfiniteMemory {
         }
       }
 
-      // Fallback: raw message snippets for sessions without LLM summaries
+      // Fallback: raw message snippets for sessions without LLM summaries.
+      // Include specialist outputs (metadata.agent set) since those contain the
+      // most durable client knowledge — Sean/Kevin analyses, etc.
       const otherSessions = await this.prisma.session.findMany({
         where: { userId, id: { not: currentSessionId }, ...(clientId ? { clientId } : {}) },
         orderBy: { updatedAt: 'desc' },
-        take: 3,
+        take: 5,
         include: {
           messages: {
             orderBy: { createdAt: 'desc' },
-            take: 5,
-            select: { role: true, content: true },
+            take: 15,
+            select: { role: true, content: true, metadata: true },
           },
         },
       })
@@ -447,10 +461,26 @@ export class InfiniteMemory {
 
       for (const session of otherSessions) {
         if (session.messages.length === 0) continue
-        const preview = session.messages
-          .reverse()
-          .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
-          .join('\n')
+        // Prioritise specialist output messages — they carry the richest context
+        const msgs = session.messages.reverse()
+        const specialistMsgs = msgs.filter((m) => {
+          const meta = m.metadata && typeof m.metadata === 'object' ? m.metadata as Record<string,unknown> : {}
+          return !!meta['agent']
+        })
+        const regularMsgs = msgs.filter((m) => {
+          const meta = m.metadata && typeof m.metadata === 'object' ? m.metadata as Record<string,unknown> : {}
+          return !meta['agent']
+        })
+        // Include up to 2 specialist outputs (capped at 600 chars each) + last 5 regular messages
+        const combined = [
+          ...specialistMsgs.slice(0, 2).map((m) => {
+            const meta = m.metadata as Record<string,unknown>
+            const agent = meta['agent'] as string
+            return `[${agent} specialist output]: ${m.content.slice(0, 600)}`
+          }),
+          ...regularMsgs.slice(-5).map((m) => `${m.role}: ${m.content.slice(0, 300)}`),
+        ]
+        const preview = combined.join('\n')
         summaryParts.push(`Session "${session.title ?? 'Untitled'}":\n${preview}`)
         totalMessages += session.messages.length
       }
@@ -495,7 +525,7 @@ export class InfiniteMemory {
           FROM agent_memories
           WHERE user_id = $2
             AND memory_type = 'EPISODIC'
-            ${clientId ? 'AND client_id = $3' : ''}
+            ${clientId ? 'AND client_id = $3' : 'AND client_id IS NULL'}
             AND embedding IS NOT NULL
           ORDER BY embedding <=> $1::vector
           LIMIT 10`
@@ -553,7 +583,7 @@ export class InfiniteMemory {
     // Recency fallback: return most recent memories (used when no embeddings exist yet)
     try {
       const memories = await this.prisma.agentMemory.findMany({
-        where: { userId, memoryType: 'EPISODIC', ...(clientId ? { clientId } : {}) },
+        where: { userId, memoryType: 'EPISODIC', clientId: clientId ?? null },
         orderBy: { createdAt: 'desc' },
         take: 5,
       })
@@ -664,6 +694,30 @@ export class InfiniteMemory {
     } catch {
       return null
     }
+  }
+
+  /** Tier 6: Fetch PROCEDURAL memories — user corrections and positive examples */
+  private async getProcedualMemories(userId: string, limit = 8): Promise<string> {
+    if (!this.prisma) return ''
+
+    const memories = await this.prisma.agentMemory.findMany({
+      where: {
+        userId,
+        memoryType: 'PROCEDURAL',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: { content: true },
+    })
+
+    if (memories.length === 0) return ''
+
+    return [
+      '## Past Corrections & Style Preferences',
+      '(Apply these rules to all matching output types)',
+      '',
+      ...memories.map((m) => m.content),
+    ].join('\n\n')
   }
 
   // ──── Formatting helpers ────────────────────────────────────────────────────────

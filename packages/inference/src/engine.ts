@@ -13,7 +13,7 @@ import type {
 import { LocalClient } from './local-client.js'
 import { ClaudeClient } from './claude-client.js'
 import { CostTracker } from './cost-tracker.js'
-import { getRoute, getFallback, isLocalTask } from './router.js'
+import { getRoute, getFallback, isLocalTask, hasLocalFallback } from './router.js'
 import { getPromptText } from './prompt-library.js'
 
 const AVAILABILITY_CHECK_INTERVAL_MS = 5 * 60 * 1000  // 5 minutes
@@ -41,11 +41,8 @@ export class InferenceEngine {
 
     this.localClient = new LocalClient()
 
-    // Initialize Claude client lazily (only when needed)
-    // This avoids throwing if ANTHROPIC_API_KEY is not set during tests
-
-    // Start periodic availability check for Ollama
-    this.startAvailabilityCheck()
+    // No proactive Ollama ping — Haiku is primary for all tasks.
+    // Qwen3 is emergency fallback only; availability is checked on first use.
   }
 
   /**
@@ -70,13 +67,19 @@ export class InferenceEngine {
     const systemPrompt = getPromptText(options.systemPromptKey)
     const maxTokens = options.maxTokens ?? route.maxTokens
 
-    // Route local tasks (classify, entity_extract, entity_verify) to Ollama/Qwen3.
-    // executeLocal() automatically falls back to Claude Haiku when Ollama is unavailable.
+    // Qwen3-primary tasks (legacy path — currently no tasks use this).
+    // Kept for backwards compat if any task is later moved back to local-primary.
     if (isLocalTask(task)) {
       return this.executeLocal(task, systemPrompt, options, maxTokens, route.jsonMode)
     }
 
-    // All other tasks route through Anthropic (with optional Opus advisor for complex tasks)
+    // Haiku-primary with Qwen3 fallback — ingestion pipeline tasks.
+    // Tries Claude Haiku first; if the API is unavailable, falls back to local Qwen3.
+    if (hasLocalFallback(task)) {
+      return this.executeClaudeWithLocalFallback(task, route.claudeModel, systemPrompt, options, maxTokens, route.jsonMode)
+    }
+
+    // Cloud-only tasks — Haiku, Sonnet, or Sonnet+Opus advisor.
     const claudeModel = route.claudeModel
     return this.executeClaude(task, claudeModel, systemPrompt, {
       ...options,
@@ -148,6 +151,21 @@ Message: ${message}`,
   /** Get the cost tracker instance */
   getCostTracker(): CostTracker {
     return this.costTracker
+  }
+
+  /**
+   * Send an image + text prompt to Claude Sonnet vision.
+   * Used for chart/figure extraction from rendered PDF pages.
+   */
+  async generateWithVision(
+    systemPrompt: string,
+    userText: string,
+    imageBase64: string,
+    imageMimeType: 'image/png' | 'image/jpeg',
+    maxTokens?: number
+  ): Promise<string> {
+    const client = this.getClaudeClient()
+    return client.generateWithVision(systemPrompt, userText, imageBase64, imageMimeType, maxTokens)
   }
 
   /** Check if local inference (Ollama) is available */
@@ -224,6 +242,38 @@ Message: ${message}`,
   }
 
   /**
+   * Execute via Claude first; fall back to local Qwen3 if Claude is unreachable.
+   * Used for ingestion tasks: classify, entity_extract, entity_verify, contextual_retrieval, etc.
+   */
+  private async executeClaudeWithLocalFallback(
+    task: InferenceTask,
+    model: ClaudeModel,
+    systemPrompt: string,
+    options: {
+      messages: InferenceMessage[]
+      tools?: ToolDefinition[] | undefined
+      sessionId?: string | undefined
+      userId?: string | undefined
+    },
+    maxTokens: number,
+    jsonMode: boolean
+  ): Promise<InferenceResponse> {
+    const cleanOptions = {
+      messages: options.messages,
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+      ...(options.userId ? { userId: options.userId } : {}),
+    }
+    try {
+      return await this.executeClaude(task, model, systemPrompt, cleanOptions, maxTokens)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      console.warn(`[InferenceEngine] Claude ${model} failed for task "${task}": ${errorMsg} — falling back to Qwen3`)
+      return this.executeLocal(task, systemPrompt, cleanOptions, maxTokens, jsonMode)
+    }
+  }
+
+  /**
    * Execute via Claude (Haiku, Sonnet, or Opus).
    * Logs cost automatically.
    */
@@ -266,11 +316,7 @@ Message: ${message}`,
   /** Start periodic Ollama availability check */
   private startAvailabilityCheck(): void {
     this.availabilityCheckTimer = setInterval(() => {
-      void this.localClient.isAvailable().then((available) => {
-        if (available) {
-          console.log('[InferenceEngine] Ollama available — local inference active')
-        }
-      })
+      void this.localClient.isAvailable()
     }, AVAILABILITY_CHECK_INTERVAL_MS)
 
     // Don't block process exit

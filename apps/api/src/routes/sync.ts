@@ -4,6 +4,7 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
 import { env } from '../lib/env.js'
 import { syncDriveFolder } from '../lib/drive-sync.js'
@@ -157,8 +158,15 @@ syncRouter.post('/drive', async (req: Request, res: Response) => {
     )
     sendEvent('done', result)
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : 'Sync failed'
-    sendEvent('error', { error: errorMsg })
+    const isPrismaError = err instanceof Prisma.PrismaClientKnownRequestError
+      || err instanceof Prisma.PrismaClientUnknownRequestError
+      || err instanceof Prisma.PrismaClientInitializationError
+    if (isPrismaError) {
+      sendEvent('error', { error: 'SYNC_FAILED', message: "Couldn't sync this folder — database error." })
+    } else {
+      const msg = err instanceof Error ? err.message : 'Sync failed'
+      sendEvent('error', { error: 'SYNC_FAILED', message: msg })
+    }
   }
 
   if (!isClosed()) res.end()

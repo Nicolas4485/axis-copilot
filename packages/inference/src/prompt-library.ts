@@ -134,8 +134,12 @@ const CIM_FIT_SCORE: PromptEntry = {
   key: 'CIM_FIT_SCORE',
   tier: 'TASK',
   prompt: `Score a PE deal opportunity across 5 dimensions (0-100 each). Return ONLY valid JSON:
-{"businessQuality":{"score":0,"rationale":"","evidence":""},"financialQuality":{"score":0,"rationale":"","evidence":""},"managementStrength":{"score":0,"rationale":"","evidence":""},"marketDynamics":{"score":0,"rationale":"","evidence":""},"dealStructure":{"score":0,"rationale":"","evidence":""},"overallFit":0,"recommendation":"PASS|PROCEED|STRONG_PROCEED","redFlags":[{"flag":"","severity":"HIGH|MEDIUM|LOW","pageRef":""}],"keyQuestions":[]}
-Score honestly. Flag missing data as 0 with rationale "Insufficient data". overallFit = weighted avg (businessQuality 30%, financialQuality 25%, managementStrength 20%, marketDynamics 15%, dealStructure 10%).`,
+{"businessQuality":{"score":0,"rationale":"","evidence":""},"financialQuality":{"score":0,"rationale":"","evidence":""},"managementStrength":{"score":0,"rationale":"","evidence":""},"marketDynamics":{"score":0,"rationale":"","evidence":""},"dealStructure":{"score":0,"rationale":"","evidence":""},"overallFit":0,"weightsUsed":{"businessQuality":0,"financialQuality":0,"managementStrength":0,"marketDynamics":0,"dealStructure":0},"recommendation":"PASS|PROCEED|STRONG_PROCEED","redFlags":[{"flag":"","severity":"HIGH|MEDIUM|LOW","pageRef":""}],"keyQuestions":[]}
+
+CRITICAL: overallFit = weighted average using the SCORING WEIGHTS provided in the user message.
+If weights are not provided, use: businessQuality 30%, financialQuality 25%, managementStrength 20%, marketDynamics 15%, dealStructure 10%.
+Score honestly. Flag missing data as 0 with rationale "Insufficient data". Echo the weights used in weightsUsed field.
+Recommendation thresholds: overallFit < 55 → PASS; 55–74 → PROCEED; 75+ → STRONG_PROCEED.`,
 }
 
 const CIM_SUMMARY: PromptEntry = {
@@ -374,6 +378,65 @@ const MGMT_ASSESSMENT_SCORE: PromptEntry = {
 Scoring rules: teamDepth 1-10 (10=deep bench to VP level). founderDependency 1-10 (10=extreme key-man risk). trackRecord 1-10 (10=proven at scale). successionRisk 1-10 (10=highest risk). overallStrength=weighted avg (trackRecord 35%, teamDepth 30%, founderDependency 20%, successionRisk 15%). keyManRisk=true if founderDependency>=8 or team fewer than 3 named executives. redFlags=array of specific risks identified. Score based only on provided evidence; use 5 with rationale "Insufficient data" when evidence is absent.`,
 }
 
+const LBO_DATA_UNAVAILABLE: PromptEntry = {
+  key: 'LBO_DATA_UNAVAILABLE',
+  tier: 'TASK',
+  prompt: `When writing LBO or financing sections without computed financial data, use this fallback:
+State clearly: "Computed returns analysis unavailable — LTM financials required."
+Then describe the framework that WOULD be applied once financials are confirmed:
+entry assumptions, leverage sizing, IRR/MOIC target ranges from sector benchmarks, and
+the three scenarios (bear/base/bull) structure. Do not fabricate specific IRR or MOIC figures.`,
+}
+
+const COMMERCIAL_ANALYSIS: PromptEntry = {
+  key: 'COMMERCIAL_ANALYSIS',
+  tier: 'TASK',
+  prompt: `You are a PE commercial diligence analyst. Analyze the deal context and return ONLY valid JSON with this exact structure:
+{"marketPosition":{"assessment":"LEADER|CHALLENGER|FOLLOWER|NICHE","rationale":"","keyDifferentiators":[]},"revenueQuality":{"recurringPct":"","topCustomerConcentration":"","nrrSignal":"","qualityRating":"HIGH|MEDIUM|LOW","flags":[]},"growthDrivers":[{"driver":"","magnitude":"HIGH|MEDIUM|LOW","evidence":""}],"competitiveThreats":[{"competitor":"","threatLevel":"HIGH|MEDIUM|LOW","mechanism":""}],"exitBuyerUniverse":[{"buyer":"","type":"STRATEGIC|FINANCIAL|IPO","rationale":""}],"overallCommercialStrength":"STRONG|ADEQUATE|WEAK"}
+
+Rules: Base every field on evidence in the context. Use exact figures where available. Set unknown fields to "unknown". Max 4 growthDrivers, 4 competitiveThreats, 5 exitBuyerUniverse entries. Customer concentration >20% = flag it. NRR <100% = flag it. qualityRating HIGH = >80% recurring + NRR >110%. qualityRating LOW = <50% recurring OR top customer >30%.`,
+}
+
+const RISK_ANALYSIS: PromptEntry = {
+  key: 'RISK_ANALYSIS',
+  tier: 'TASK',
+  prompt: `You are a PE risk analyst. Analyze the deal context and return ONLY valid JSON with this exact structure:
+{"risks":[{"title":"","severity":"HIGH|MEDIUM|LOW","category":"OPERATIONAL|FINANCIAL|MARKET|REGULATORY|EXECUTION|LEVERAGE","description":"","mitigant":"","residualRisk":"HIGH|MEDIUM|LOW"}],"overallRiskRating":"HIGH|MEDIUM|LOW","topThreeRisks":[],"dealBreakers":[]}
+
+Rules: Identify 5–8 specific risks. Every HIGH risk description must be quantified — cite the specific figure or fact. Automatic HIGH severity: customer concentration >20%, unaudited financials, leverage coverage <2.0x EBITDA/interest, single-product revenue >80%. mitigant = "No credible mitigation identified" when none exists — do not soften. dealBreakers = risk titles that would cause PASS without resolution. topThreeRisks = titles of 3 most severe risks, severity-ordered.`,
+}
+
+const MEMO_CONSISTENCY_CHECK: PromptEntry = {
+  key: 'MEMO_CONSISTENCY_CHECK',
+  tier: 'TASK',
+  prompt: `You are a senior PE associate doing a final consistency review of an IC memo before IC submission.
+
+Check the memo for the following specific inconsistencies. Return ONLY valid JSON:
+{
+  "issues": [
+    {
+      "severity": "HIGH|MEDIUM|LOW",
+      "type": "number_mismatch|recommendation_conflict|fact_contradiction|logic_gap",
+      "description": "<one sentence — what is inconsistent and where>",
+      "sectionA": "<section id>",
+      "sectionB": "<section id>",
+      "suggestedFix": "<one sentence — what the corrected statement should say>"
+    }
+  ],
+  "isConsistent": true|false,
+  "summaryNote": "<one sentence summary for the analyst>"
+}
+
+Checks to perform:
+1. NUMBER MISMATCH: Does the Revenue, EBITDA, or entry EV/EBITDA cited in lbo_analysis match what appears in financial_analysis? Flag any difference >5%.
+2. RECOMMENDATION CONFLICT: If key_risks has 2+ HIGH severity risks with weak mitigants, does the recommendation section still say STRONG_PROCEED? That is a logic conflict.
+3. MANAGEMENT CONTRADICTION: Does the management verdict in management_assessment (EXCEPTIONAL/STRONG/ADEQUATE/WEAK) align with what investment_thesis says about management quality?
+4. EXIT CONSISTENCY: Do the exit multiples in exit_analysis align with the base case exit multiple in lbo_analysis?
+5. EBITDA BRIDGE: Does the EBITDA at exit in value_creation_plan approximately match the exit EBITDA implied by lbo_analysis base case?
+
+Return an empty issues array if no meaningful inconsistencies are found. Only flag genuine conflicts — do not flag stylistic differences or minor rounding.`,
+}
+
 // ─── Registry ──────────────────────────────────────────────────
 
 /** All prompts indexed by key */
@@ -406,6 +469,10 @@ const PROMPT_REGISTRY: Record<string, PromptEntry> = {
   AGENT_GENERATE,
   IC_MEMO_SECTION,
   MGMT_ASSESSMENT_SCORE,
+  LBO_DATA_UNAVAILABLE,
+  MEMO_CONSISTENCY_CHECK,
+  COMMERCIAL_ANALYSIS,
+  RISK_ANALYSIS,
 }
 
 /**

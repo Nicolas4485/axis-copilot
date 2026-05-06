@@ -32,6 +32,7 @@ import { settingsRouter } from './routes/settings.js'
 import { vdrRouter } from './routes/vdr.js'
 import { analyticsRouter } from './routes/analytics.js'
 import { pitchDeckTemplateRouter } from './routes/pitch-deck-template.js'
+import { extensionRouter } from './routes/extension.js'
 import { prisma } from './lib/prisma.js'
 import { redis } from './lib/redis.js'
 import { syncClientsFromDrive } from './scripts/sync-clients-from-drive.js'
@@ -63,6 +64,12 @@ app.use('/api/auth', authRouter)
 
 // OAuth callback is public — no JWT required
 app.use('/api/integrations', integrationsRouter)
+
+// Chrome extension routes — uses static EXTENSION_API_KEY auth instead of JWT,
+// because the extension's service worker can't access cookie-scoped tokens.
+// Mounted BEFORE the global JWT authenticate so it doesn't get blocked.
+// See docs/EXTENSION-PROTOCOL.md.
+app.use('/api/extension', extensionRouter)
 
 // ─── Protected routes (JWT + rate limit) ──────────────────────────────────────
 app.use('/api', authenticate, generalRateLimit)

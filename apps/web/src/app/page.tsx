@@ -152,8 +152,9 @@ function DealRow({ deal }: { deal: Deal }) {
 }
 
 /* ── Status item ──────────────────────────────────────────────────────── */
-function StatusItem({ label, status }: { label: string; status: string }) {
-  const ok = status === 'ok' || status === 'healthy' || status === 'connected'
+function StatusItem({ label, status, optional = false }: { label: string; status: string; optional?: boolean }) {
+  const ok = status === 'ok' || status === 'healthy' || status === 'connected' || status === 'active'
+  const offlineColor = optional ? 'var(--warn)' : 'var(--bad)'
   return (
     <div style={{
       padding: '12px 14px', borderRight: '1px solid var(--line)',
@@ -163,10 +164,10 @@ function StatusItem({ label, status }: { label: string; status: string }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
         {ok
           ? <CheckCircle2 size={13} style={{ color: 'var(--good)' }} />
-          : <XCircle     size={13} style={{ color: 'var(--bad)' }} />
+          : <XCircle     size={13} style={{ color: offlineColor }} />
         }
-        <span style={{ fontSize: 12, color: ok ? 'var(--good)' : 'var(--bad)', fontWeight: 500 }}>
-          {ok ? 'Online' : 'Offline'}
+        <span style={{ fontSize: 12, color: ok ? 'var(--good)' : offlineColor, fontWeight: 500 }}>
+          {ok ? 'Online' : (optional ? 'Unavailable' : 'Offline')}
         </span>
       </div>
     </div>
@@ -364,11 +365,11 @@ export default function Dashboard() {
           <div>
             <div className="ax-eyebrow" style={{ marginBottom: 8 }}>Infrastructure</div>
             <div className="ax-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)' }}>
-              <StatusItem label="Database"  status={healthData.db}             />
-              <StatusItem label="Redis"     status={healthData.redis}          />
-              <StatusItem label="Neo4j"     status={healthData.neo4j}          />
-              <StatusItem label="Anthropic" status={healthData.anthropic}      />
-              <StatusItem label="AI Models" status={healthData.localInference} />
+              <StatusItem label="Database"        status={healthData.db}             />
+              <StatusItem label="Redis"           status={healthData.redis}          />
+              <StatusItem label="Neo4j"           status={healthData.neo4j}          />
+              <StatusItem label="Claude API"      status={healthData.anthropic}      />
+              <StatusItem label="Ollama (local)"  status={healthData.localInference} optional />
             </div>
           </div>
         )}

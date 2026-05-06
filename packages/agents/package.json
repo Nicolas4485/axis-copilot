@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@axis/inference": "workspace:*",
+    "@axis/ingestion": "workspace:*",
     "@axis/memory": "workspace:*",
     "@axis/rag": "workspace:*",
     "@axis/tools": "workspace:*",

@@ -1,10 +1,19 @@
 import { Router } from 'express'
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import { prisma } from '../lib/prisma.js'
 import { createClientSchema, updateClientSchema, createStakeholderSchema } from '../lib/schemas.js'
 import { syncClientsFromDrive } from '../scripts/sync-clients-from-drive.js'
+import { writeLimiter } from '../middleware/auth.js'
 
 export const clientsRouter = Router()
+
+// Apply write rate limit to all mutating methods
+clientsRouter.use((req: Request, res: Response, next: NextFunction) => {
+  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
+    return writeLimiter(req, res, next)
+  }
+  next()
+})
 
 /**
  * GET /api/clients — List all clients for the authenticated user

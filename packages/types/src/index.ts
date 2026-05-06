@@ -12,3 +12,6 @@ export interface RequestContext {
 
 // Encryption utilities
 export { encrypt, decrypt } from './encryption.js'
+
+// Extension ↔ Copilot protocol
+export * from './extension-protocol.js'

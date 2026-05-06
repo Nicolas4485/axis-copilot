@@ -5,8 +5,8 @@
 import type { InferenceContentBlock, InferenceMessage, InferenceResponse, ToolDefinition } from './types.js'
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta'
-const DEFAULT_MODEL = 'gemini-2.0-flash'
-const REQUEST_TIMEOUT_MS = 90_000
+const DEFAULT_MODEL = 'gemini-2.0-flash-001'
+const REQUEST_TIMEOUT_MS = 30_000
 
 /** Gemini content part */
 interface GeminiPart {
@@ -254,10 +254,26 @@ export class GeminiClient {
             parts.push({
               functionCall: { name: block.name, args: block.input },
             })
+          } else if (block.type === 'tool_result') {
+            // Convert Anthropic-style tool_result to Gemini functionResponse
+            let parsedContent: Record<string, unknown>
+            try {
+              parsedContent = JSON.parse(block.content) as Record<string, unknown>
+            } catch {
+              parsedContent = { result: block.content }
+            }
+            parts.push({
+              functionResponse: {
+                name: block.name ?? block.tool_use_id,
+                response: parsedContent,
+              },
+            })
           }
         }
       }
 
+      // Skip messages with no parts — Gemini rejects empty content blocks
+      if (parts.length === 0) continue
       contents.push({ role, parts })
     }
 

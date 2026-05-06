@@ -7,6 +7,8 @@ declare global {
       requestId: string
       /** Set by authenticate middleware after JWT validation. */
       userId?: string
+      /** Set by authenticate middleware after JWT validation. */
+      userEmail?: string
     }
   }
 }

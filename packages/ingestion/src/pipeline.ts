@@ -8,6 +8,7 @@ import type { PrismaClient } from '@prisma/client'
 import { Redis } from 'ioredis'
 import { InferenceEngine } from '@axis/inference'
 import { getParser } from './parsers/index.js'
+import { extractChartPages } from './parsers/chart-extractor.js'
 import { DriveDiscovery } from './drive-discovery.js'
 import type { NodeLabel } from '@axis/knowledge-graph'
 import type {
@@ -33,6 +34,188 @@ const TOTAL_STEPS = 15
 /** Approximate tokens from character count (1 token ≈ 4 chars for English) */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
+}
+
+/**
+ * Section-aware chunking — exported for unit testing.
+ *
+ * Priority 1: chunk by section boundaries, merge small sections, sub-split large ones.
+ * Priority 2: chunk by paragraph breaks (\n\n) when no sections exist.
+ * Priority 3: sentence-snapped token chunking (original logic) as last resort.
+ */
+export function chunkDocumentImpl(parsed: ParsedDocument): DocumentChunk[] {
+  const chunks: DocumentChunk[] = []
+  const text = parsed.text
+  const overlapChars = CHUNK_OVERLAP_TOKENS * 4
+  const charsPerChunk = CHUNK_TARGET_TOKENS * 4
+  let chunkIndex = 0
+
+  function subSplit(content: string, titlePrefix: string | undefined): DocumentChunk[] {
+    const result: DocumentChunk[] = []
+    let position = 0
+
+    while (position < content.length) {
+      let endPos = Math.min(
+        position + charsPerChunk + (CHUNK_MAX_TOKENS - CHUNK_TARGET_TOKENS) * 4,
+        content.length
+      )
+
+      if (endPos < content.length) {
+        const searchStart = Math.max(position + CHUNK_MIN_TOKENS * 4, endPos - 200)
+        const searchRegion = content.slice(searchStart, endPos + 200)
+        const sentenceEnd = searchRegion.search(/[.!?]\s+/)
+        if (sentenceEnd >= 0) {
+          endPos = searchStart + sentenceEnd + 1
+        }
+      }
+
+      const chunkText = content.slice(position, endPos).trim()
+      if (chunkText.length > 0) {
+        result.push({
+          content: chunkText,
+          chunkIndex: 0, // assigned after count is known
+          tokens: estimateTokens(chunkText),
+          metadata: { sectionTitle: titlePrefix },
+        })
+      }
+
+      const nextPosition = endPos - overlapChars
+      if (nextPosition <= position || nextPosition < 0) {
+        position = endPos
+      } else {
+        position = nextPosition
+      }
+    }
+
+    if (titlePrefix && result.length > 1) {
+      const total = result.length
+      for (let k = 0; k < total; k++) {
+        result[k]!.metadata.sectionTitle = `${titlePrefix} (${k + 1}/${total})`
+      }
+    }
+
+    return result
+  }
+
+  // Priority 1: Section-aware chunking
+  const activeSections = parsed.sections.filter((s) => s.content.trim().length > 0)
+  if (activeSections.length > 0) {
+    let i = 0
+    while (i < activeSections.length) {
+      let currentContent = activeSections[i]!.content
+      let currentTitle = activeSections[i]!.title
+
+      // Merge small sections with subsequent ones while combined stays in range
+      while (estimateTokens(currentContent) < CHUNK_MIN_TOKENS && i + 1 < activeSections.length) {
+        const next = activeSections[i + 1]!
+        const merged = currentContent + '\n\n' + next.content
+        if (estimateTokens(merged) <= CHUNK_MAX_TOKENS) {
+          currentContent = merged
+          currentTitle = currentTitle ? `${currentTitle} / ${next.title}` : next.title
+          i++
+        } else {
+          break
+        }
+      }
+
+      if (estimateTokens(currentContent) > CHUNK_MAX_TOKENS) {
+        const sub = subSplit(currentContent, currentTitle || undefined)
+        for (const s of sub) {
+          s.chunkIndex = chunkIndex++
+          chunks.push(s)
+        }
+      } else {
+        chunks.push({
+          content: currentContent.trim(),
+          chunkIndex: chunkIndex++,
+          tokens: estimateTokens(currentContent),
+          metadata: { sectionTitle: currentTitle || undefined },
+        })
+      }
+
+      i++
+    }
+  }
+  // Priority 2: Paragraph-aware chunking
+  else if (text.includes('\n\n')) {
+    const paragraphs = text.split(/\n\n+/).map((p) => p.trim()).filter((p) => p.length > 0)
+    let accumulated = ''
+    let accTokens = 0
+
+    for (const para of paragraphs) {
+      const paraTokens = estimateTokens(para)
+
+      if (paraTokens > CHUNK_MAX_TOKENS) {
+        if (accumulated.trim().length > 0) {
+          chunks.push({ content: accumulated.trim(), chunkIndex: chunkIndex++, tokens: accTokens, metadata: {} })
+        }
+        const sub = subSplit(para, undefined)
+        for (const s of sub) {
+          s.chunkIndex = chunkIndex++
+          chunks.push(s)
+        }
+        accumulated = ''
+        accTokens = 0
+      } else if (accTokens + paraTokens > CHUNK_MAX_TOKENS) {
+        if (accumulated.trim().length > 0) {
+          chunks.push({ content: accumulated.trim(), chunkIndex: chunkIndex++, tokens: accTokens, metadata: {} })
+        }
+        const overlapText = accumulated.slice(-overlapChars)
+        accumulated = overlapText ? overlapText + '\n\n' + para : para
+        accTokens = estimateTokens(accumulated)
+      } else {
+        accumulated = accumulated ? accumulated + '\n\n' + para : para
+        accTokens += paraTokens
+      }
+    }
+
+    if (accumulated.trim().length > 0) {
+      chunks.push({ content: accumulated.trim(), chunkIndex: chunkIndex++, tokens: accTokens, metadata: {} })
+    }
+  }
+  // Priority 3: Sentence-snapped token chunking (original logic, last resort)
+  else {
+    let position = 0
+
+    while (position < text.length) {
+      let endPos = Math.min(
+        position + charsPerChunk + (CHUNK_MAX_TOKENS - CHUNK_TARGET_TOKENS) * 4,
+        text.length
+      )
+
+      if (endPos < text.length) {
+        const searchStart = Math.max(position + CHUNK_MIN_TOKENS * 4, endPos - 200)
+        const searchRegion = text.slice(searchStart, endPos + 200)
+        const sentenceEnd = searchRegion.search(/[.!?]\s+/)
+        if (sentenceEnd >= 0) {
+          endPos = searchStart + sentenceEnd + 1
+        }
+      }
+
+      const chunkText = text.slice(position, endPos).trim()
+      if (chunkText.length > 0) {
+        chunks.push({
+          content: chunkText,
+          chunkIndex: chunkIndex++,
+          tokens: estimateTokens(chunkText),
+          metadata: {},
+        })
+      }
+
+      const nextPosition = endPos - overlapChars
+      if (nextPosition <= position || nextPosition < 0) {
+        position = endPos
+      } else {
+        position = nextPosition
+      }
+    }
+  }
+
+  if (chunks.length === 0 && text.trim().length > 0) {
+    chunks.push({ content: text.trim(), chunkIndex: 0, tokens: estimateTokens(text), metadata: {} })
+  }
+
+  return chunks
 }
 
 /**
@@ -90,9 +273,12 @@ export class IngestionPipeline {
     userId: string,
     options?: {
       clientId?: string
+      dealId?: string
       sourceType?: SourceType
       sourceId?: string
       sourcePath?: string
+      enableChartExtraction?: boolean
+      forceReprocess?: boolean
     }
   ): Promise<IngestionResult> {
     const startTime = Date.now()
@@ -116,7 +302,7 @@ export class IngestionPipeline {
       const existingByChecksum = await this.prisma.knowledgeDocument.findFirst({
         where: { checksum, userId },
       })
-      if (existingByChecksum && existingByChecksum.syncStatus === 'INDEXED') {
+      if (existingByChecksum && existingByChecksum.syncStatus === 'INDEXED' && !options?.forceReprocess) {
         this.emitProgress(documentId, 'checksum', 2, `Duplicate detected — already indexed as ${existingByChecksum.id}`)
         return {
           documentId: existingByChecksum.id,
@@ -128,6 +314,12 @@ export class IngestionPipeline {
           durationMs: Date.now() - startTime,
           status: 'INDEXED',
         }
+      }
+
+      // forceReprocess: delete old chunks so storeChunks() starts clean
+      if (options?.forceReprocess && existingByChecksum) {
+        await this.prisma.documentChunk.deleteMany({ where: { documentId: existingByChecksum.id } })
+        this.emitProgress(documentId, 'checksum', 2, `Force reprocess — cleared ${existingByChecksum.chunkCount ?? 0} existing chunks`)
       }
 
       // Step 3: Attribute — determine which client this document belongs to
@@ -168,6 +360,31 @@ export class IngestionPipeline {
         `Parsed: ${parsed.metadata.wordCount} words, ${parsed.sections.length} sections`
       )
 
+      // Step 4.5: Chart extraction (CIM mode only — gated by enableChartExtraction flag)
+      // Renders low-text PDF pages to PNG and sends to Claude vision.
+      // Standard uploads are completely unaffected.
+      if (options?.enableChartExtraction && mimeType === 'application/pdf') {
+        try {
+          const chartPages = await extractChartPages(fileContent, this.engine)
+          if (chartPages.length > 0) {
+            for (const { pageNumber, description } of chartPages) {
+              parsed.sections.push({
+                title: `Chart — Page ${pageNumber}`,
+                content: `[CHART p.${pageNumber}] ${description}`,
+                level: 2,
+                order: parsed.sections.length,
+              })
+            }
+            this.emitProgress(documentId, 'chart_extraction', 4.5,
+              `Extracted ${chartPages.length} chart/figure descriptions from visual pages`
+            )
+          }
+        } catch (err) {
+          // Non-fatal — chart extraction failure must never break the main pipeline
+          console.warn('[Pipeline] Chart extraction failed, continuing without it:', err instanceof Error ? err.message : err)
+        }
+      }
+
       // Step 5: Classify — determine document type from parser signals + model
       docType = await this.classifyDocument(parsed, filename)
       this.emitProgress(documentId, 'classify', 5, `Classified as: ${docType}`)
@@ -183,7 +400,8 @@ export class IngestionPipeline {
       await this.updateRecords(documentId, {
         userId,
         clientId,
-        title: parsed.metadata.title,
+        dealId: options?.dealId ?? null,
+        title: parsed.metadata.title || filename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '),
         sourceType,
         sourcePath: options?.sourcePath ?? null,
         sourceId: options?.sourceId ?? null,
@@ -243,10 +461,16 @@ export class IngestionPipeline {
       }
 
       // Step 12: Update records — create/update KnowledgeDocument in Prisma
+      const rawTitle = (parsed.metadata.title ?? '').trim()
+      const isUsableTitle = rawTitle.length > 0 && rawTitle.toLowerCase() !== '(anonymous)'
+      const resolvedTitle = isUsableTitle
+        ? rawTitle
+        : filename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')
       await this.updateRecords(documentId, {
         userId,
         clientId,
-        title: parsed.metadata.title,
+        dealId: options?.dealId ?? null,
+        title: resolvedTitle,
         sourceType,
         sourcePath: options?.sourcePath ?? null,
         sourceId: options?.sourceId ?? null,
@@ -258,13 +482,22 @@ export class IngestionPipeline {
       })
       this.emitProgress(documentId, 'update_records', 12, 'Document record saved')
 
-      // Step 13: Episodic memory — store ingestion event for agent memory
-      await this.storeEpisodicMemory(documentId, userId, clientId, parsed, docType)
-      this.emitProgress(documentId, 'episodic_memory', 13, 'Episodic memory created')
+      // Step 13: Episodic memory — non-critical, must not fail the whole ingest
+      try {
+        await this.storeEpisodicMemory(documentId, userId, clientId, parsed, docType)
+        this.emitProgress(documentId, 'episodic_memory', 13, 'Episodic memory created')
+      } catch (err) {
+        console.warn(`[Pipeline] Step 13 (episodic_memory) failed non-fatally: ${err instanceof Error ? err.message : 'Unknown'}`)
+        this.emitProgress(documentId, 'episodic_memory', 13, 'Episodic memory skipped')
+      }
 
-      // Step 14: Publish event — log (Redis pub/sub wired later)
-      await this.publishEvent(documentId, userId, clientId, docType, chunkCount, entityCount)
-      this.emitProgress(documentId, 'publish_event', 14, 'Ingestion event logged')
+      // Step 14: Publish event — non-critical
+      try {
+        await this.publishEvent(documentId, userId, clientId, docType, chunkCount, entityCount)
+        this.emitProgress(documentId, 'publish_event', 14, 'Ingestion event logged')
+      } catch (err) {
+        console.warn(`[Pipeline] Step 14 (publish_event) failed non-fatally: ${err instanceof Error ? err.message : 'Unknown'}`)
+      }
 
       // Step 15: Finalise
       this.emitProgress(documentId, 'finalise', 15, 'Ingestion complete')
@@ -353,65 +586,7 @@ Preview: ${parsed.text.slice(0, 300)}`,
 
   /** Step 6: Split document into chunks with overlap */
   private chunkDocument(parsed: ParsedDocument): DocumentChunk[] {
-    const chunks: DocumentChunk[] = []
-    const text = parsed.text
-
-    const charsPerChunk = CHUNK_TARGET_TOKENS * 4
-    const overlapChars = CHUNK_OVERLAP_TOKENS * 4
-
-    let chunkIndex = 0
-    let position = 0
-
-    while (position < text.length) {
-      let endPos = Math.min(position + charsPerChunk + (CHUNK_MAX_TOKENS - CHUNK_TARGET_TOKENS) * 4, text.length)
-
-      if (endPos < text.length) {
-        const searchStart = Math.max(position + CHUNK_MIN_TOKENS * 4, endPos - 200)
-        const searchRegion = text.slice(searchStart, endPos + 200)
-        const sentenceEnd = searchRegion.search(/[.!?]\s+/)
-        if (sentenceEnd >= 0) {
-          endPos = searchStart + sentenceEnd + 1
-        }
-      }
-
-      const chunkText = text.slice(position, endPos).trim()
-      if (chunkText.length > 0) {
-        const tokens = estimateTokens(chunkText)
-
-        const section = parsed.sections.find((s) => {
-          const sectionStart = text.indexOf(s.content)
-          return sectionStart >= 0 && sectionStart <= position && position < sectionStart + s.content.length
-        })
-
-        chunks.push({
-          content: chunkText,
-          chunkIndex: chunkIndex++,
-          tokens,
-          metadata: {
-            sectionTitle: section?.title,
-          },
-        })
-      }
-
-      // Advance position; ensure it always moves forward
-      const nextPosition = endPos - overlapChars
-      if (nextPosition <= position || nextPosition < 0) {
-        position = endPos // Prevent infinite loop
-      } else {
-        position = nextPosition
-      }
-    }
-
-    if (chunks.length === 0 && text.trim().length > 0) {
-      chunks.push({
-        content: text.trim(),
-        chunkIndex: 0,
-        tokens: estimateTokens(text),
-        metadata: {},
-      })
-    }
-
-    return chunks
+    return chunkDocumentImpl(parsed)
   }
 
   /**
@@ -581,12 +756,12 @@ ${chunksListing}`,
     }
 
     if (ids.length > 0) {
-      // Use unnest to update all embeddings in one SQL statement
-      // $1::uuid[] and $2::text[] are parameterized — not vulnerable to injection
+      // Use unnest to update all embeddings in one SQL statement.
+      // IDs are text cuids — must use text[] not uuid[] to avoid operator type mismatch.
       await this.prisma.$executeRawUnsafe(
         `UPDATE document_chunks
          SET embedding = v.vec::vector
-         FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::text[]) AS vec) AS v
+         FROM (SELECT unnest($1::text[]) AS id, unnest($2::text[]) AS vec) AS v
          WHERE document_chunks.id = v.id`,
         ids,
         vectors
@@ -617,24 +792,64 @@ ${chunksListing}`,
 Text:
 ${combinedText.slice(0, 3000)}`,
           }],
-          maxTokens: 500,
+          maxTokens: 1500,
         })
 
-        const text = response.content
+        const rawText = response.content
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
           .map((b) => b.text)
           .join('')
 
-        const jsonMatch = text.match(/\[[\s\S]*\]/)
-        if (jsonMatch?.[0]) {
-          const parsed = JSON.parse(jsonMatch[0]) as Array<{
-            name: string
-            type: string
-            properties: Record<string, unknown>
-            confidence: number
-          }>
+        // Strip Qwen3 <think>...</think> reasoning blocks before parsing
+        const text = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
 
-          for (const entity of parsed) {
+        type RawEntity = {
+          name: string
+          type: string
+          properties: Record<string, unknown>
+          confidence: number
+        }
+
+        // Qwen3 with format:'json' returns an object (often {"entities":[...]}),
+        // but can also return a bare array. Handle both shapes.
+        let parsedEntities: RawEntity[] | null = null
+        const objectMatch = text.match(/\{[\s\S]*\}/)
+        const arrayMatch = text.match(/\[[\s\S]*\]/)
+
+        if (objectMatch?.[0]) {
+          try {
+            const obj = JSON.parse(objectMatch[0]) as Record<string, unknown>
+            const candidateKeys = ['entities', 'items', 'results', 'data']
+            for (const key of candidateKeys) {
+              if (Array.isArray(obj[key])) {
+                parsedEntities = obj[key] as RawEntity[]
+                break
+              }
+            }
+            if (!parsedEntities) {
+              for (const value of Object.values(obj)) {
+                if (Array.isArray(value)) {
+                  parsedEntities = value as RawEntity[]
+                  break
+                }
+              }
+            }
+          } catch {
+            // fall through to bare-array parse
+          }
+        }
+
+        if (!parsedEntities && arrayMatch?.[0]) {
+          try {
+            parsedEntities = JSON.parse(arrayMatch[0]) as RawEntity[]
+          } catch {
+            parsedEntities = null
+          }
+        }
+
+        if (parsedEntities && Array.isArray(parsedEntities)) {
+          for (const entity of parsedEntities) {
+            if (!entity || typeof entity.name !== 'string' || !entity.name.trim()) continue
             entities.push({
               name: entity.name,
               type: entity.type as ExtractedEntity['type'],
@@ -736,10 +951,14 @@ Properties: ${JSON.stringify(entity.properties)}`,
         try {
           await graphOps.upsertNode(label, {
             id: nodeId,
+            clientId,
             name: entity.name,
             sourceDocIds: [documentId],
             ...entity.properties,
           })
+          // Connect entity to its client — Client node has id = clientId (no prefix).
+          // Prevents orphaned nodes on every future ingestion.
+          await graphOps.upsertRelationship('PART_OF', { fromId: nodeId, toId: clientId })
         } catch (nodeErr) {
           console.warn(`[Pipeline] Failed to upsert entity "${entity.name}": ${nodeErr instanceof Error ? nodeErr.message : 'Unknown'}`)
         }
@@ -808,6 +1027,7 @@ Properties: ${JSON.stringify(entity.properties)}`,
     data: {
       userId: string
       clientId: string | null
+      dealId: string | null
       title: string
       sourceType: SourceType
       sourcePath: string | null
@@ -825,6 +1045,7 @@ Properties: ${JSON.stringify(entity.properties)}`,
         id: documentId,
         userId: data.userId,
         ...(data.clientId ? { clientId: data.clientId } : {}),
+        ...(data.dealId ? { dealId: data.dealId } : {}),
         title: data.title,
         sourceType: data.sourceType as 'GDRIVE' | 'UPLOAD' | 'WEB' | 'MANUAL',
         sourcePath: data.sourcePath,
@@ -839,6 +1060,7 @@ Properties: ${JSON.stringify(entity.properties)}`,
       },
       update: {
         ...(data.clientId ? { clientId: data.clientId } : {}),
+        ...(data.dealId ? { dealId: data.dealId } : {}),
         title: data.title,
         docType: data.docType,
         checksum: data.checksum,
@@ -858,13 +1080,17 @@ Properties: ${JSON.stringify(entity.properties)}`,
     parsed: ParsedDocument,
     docType: DocType
   ): Promise<void> {
+    const title = parsed.metadata.title?.trim() || 'untitled'
+    const topics = parsed.sections.slice(0, 5).map((s) => s.title).filter(Boolean).join(', ') || 'untitled sections'
+    const tags = [docType, title, documentId].filter((t): t is string => typeof t === 'string' && t.length > 0)
+
     await this.prisma.agentMemory.create({
       data: {
         userId,
         ...(clientId ? { clientId } : {}),
         memoryType: 'EPISODIC',
-        content: `Ingested ${docType} document: "${parsed.metadata.title}" (${parsed.metadata.wordCount} words, ${documentId}). Key topics: ${parsed.sections.slice(0, 5).map((s) => s.title).filter(Boolean).join(', ') || 'untitled sections'}.`,
-        tags: [docType, parsed.metadata.title, documentId],
+        content: `Ingested ${docType} document: "${title}" (${parsed.metadata.wordCount} words, ${documentId}). Key topics: ${topics}.`,
+        tags,
       },
     })
   }
@@ -888,47 +1114,46 @@ Properties: ${JSON.stringify(entity.properties)}`,
       timestamp: new Date().toISOString(),
     })
 
-    console.log(`[Pipeline] Event: document_ingested | doc=${documentId} user=${userId} client=${clientId ?? 'none'} type=${docType} chunks=${chunkCount} entities=${entityCount}`)
-
     if (this.redis) {
       try {
         await this.redis.publish(INGESTION_CHANNEL, payload)
-      } catch (err) {
-        // Non-critical — log only, pipeline must not fail because Redis is down
-        console.warn(`[Pipeline] Redis publish failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      } catch {
+        // Non-critical — pipeline continues even if event publish fails
       }
     }
   }
 
-  // ─── Helpers ────────────────────────────────────────────────────
-
+  /** Emit progress event to the onProgress callback */
   private emitProgress(
     documentId: string,
     step: string,
     stepNumber: number,
     message: string
   ): void {
-    const event: IngestionProgress = {
+    if (!this.onProgress) return
+    this.onProgress({
       documentId,
       step,
       stepNumber,
       totalSteps: TOTAL_STEPS,
-      status: stepNumber === TOTAL_STEPS ? 'completed' : 'running',
+      status: stepNumber === 0 ? 'failed' : stepNumber === TOTAL_STEPS ? 'completed' : 'running',
       message,
       timestamp: new Date().toISOString(),
-    }
-    console.log(`[Pipeline] Step ${stepNumber}/${TOTAL_STEPS}: ${message}`)
-    this.onProgress?.(event)
+    })
   }
 
+  /** Generate a unique document ID */
   private generateId(): string {
-    return `doc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const timestamp = Date.now()
+    const random = Math.random().toString(36).slice(2, 9)
+    return `doc_${timestamp}_${random}`
   }
 
-  private groupChunks(chunks: DocumentChunk[], groupSize: number): DocumentChunk[][] {
-    const groups: DocumentChunk[][] = []
-    for (let i = 0; i < chunks.length; i += groupSize) {
-      groups.push(chunks.slice(i, i + groupSize))
+  /** Split an array into groups of at most `size` items */
+  private groupChunks<T>(items: T[], size: number): T[][] {
+    const groups: T[][] = []
+    for (let i = 0; i < items.length; i += size) {
+      groups.push(items.slice(i, i + size))
     }
     return groups
   }

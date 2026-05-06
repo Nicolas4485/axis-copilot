@@ -1,0 +1,41 @@
+{
+  "_comment": "Auto-derivable snapshot of the JS-relevant constants from extension-protocol.ts. Mirror this file at axis-ext/utils/protocol-shared.json so the plain-JS extension imports the same source of truth. If you change values here, also update extension-protocol.ts.",
+  "EXTENSION_PROTOCOL_VERSION": "1.0.0",
+  "EXTENSION_ENDPOINTS": {
+    "STATUS": "/api/extension/status",
+    "MEMORY": "/api/extension/memory",
+    "INSIGHT": "/api/extension/insight",
+    "CHAT": "/api/extension/chat"
+  },
+  "ExtensionMSG": {
+    "GET_PAGE_CONTEXT": "GET_PAGE_CONTEXT",
+    "GET_CHAT_HISTORY": "GET_CHAT_HISTORY",
+    "INJECT_PROMPT": "INJECT_PROMPT",
+    "TRIGGER_SUMMARY": "TRIGGER_SUMMARY",
+    "SET_SYSTEM_CONTEXT": "SET_SYSTEM_CONTEXT",
+    "GET_EXTENSION_STATUS": "GET_EXTENSION_STATUS",
+    "SAVE_TO_MEMORY": "SAVE_TO_MEMORY"
+  },
+  "ExtensionInternalMSG": {
+    "CHAT": "CHAT",
+    "PING_AXIS": "PING_AXIS",
+    "OPEN_POPUP": "OPEN_POPUP",
+    "STREAM_CHUNK": "STREAM_CHUNK",
+    "STREAM_DONE": "STREAM_DONE",
+    "STREAM_ERROR": "STREAM_ERROR"
+  },
+  "BrowserAgentMSG": {
+    "_comment": "Phase 2 (reserved) — implement in axis-bridge.js per the Phase 2 spec, then promote handlers here.",
+    "OPEN_TAB": "OPEN_TAB",
+    "CLOSE_TAB": "CLOSE_TAB",
+    "GET_BROWSER_STATE": "GET_BROWSER_STATE",
+    "READ_PAGE": "READ_PAGE",
+    "FIND_ELEMENT": "FIND_ELEMENT",
+    "SCREENSHOT": "SCREENSHOT",
+    "CLICK_ELEMENT": "CLICK_ELEMENT",
+    "FILL_INPUT": "FILL_INPUT",
+    "SCROLL": "SCROLL",
+    "WAIT_FOR": "WAIT_FOR",
+    "CANCEL_AGENT_PLAN": "CANCEL_AGENT_PLAN"
+  }
+}

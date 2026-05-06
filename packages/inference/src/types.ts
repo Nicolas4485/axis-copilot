@@ -11,7 +11,7 @@ export interface ToolDefinition {
 export type InferenceContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string }
+  | { type: 'tool_result'; tool_use_id: string; name?: string; content: string }
 
 /** What the model returns */
 export interface InferenceResponse {
@@ -48,6 +48,7 @@ export type InferenceTask =
   | 'relevance_score'    // Claude Haiku — passage relevance scoring
   | 'rag_plan'           // Claude Haiku — decompose query into sub-questions with sources
   | 'rag_reflect'        // Claude Haiku — score retrieved evidence and identify gaps
+  | 'chart_extraction'   // Claude Sonnet vision — extract charts/tables from PDF pages
 
 /** System prompt tier determines max token budget */
 export type PromptTier = 'MICRO' | 'TASK' | 'AGENT'

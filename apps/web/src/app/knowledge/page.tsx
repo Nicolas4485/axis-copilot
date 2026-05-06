@@ -6,7 +6,8 @@ import { useQuery } from '@tanstack/react-query'
 import { clients } from '@/lib/api'
 import { KnowledgeGraph } from '@/components/knowledge-graph'
 import { DocumentViewer } from '@/components/document-viewer'
-import { Network, FileText, ChevronDown } from 'lucide-react'
+import Link from 'next/link'
+import { Network, FileText, ChevronDown, Upload } from 'lucide-react'
 
 type KnowledgeTab = 'graph' | 'documents'
 
@@ -39,23 +40,26 @@ function KnowledgePageContent() {
   }, [clientList, selectedClientId])
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg)' }}>
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+      <header style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '16px 24px', borderBottom: '1px solid var(--line)',
+        background: 'var(--surface)', flexShrink: 0,
+      }}>
         <div>
-          <h1 className="font-serif text-2xl text-[var(--gold)]">Knowledge</h1>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Entities, relationships, and ingested documents
-          </p>
+          <div className="ax-eyebrow">Firm</div>
+          <h1 style={{ fontWeight: 700, fontSize: 18, color: 'var(--ink)', marginTop: 2 }}>Knowledge Graph</h1>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* Client selector */}
-          <div className="relative">
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
             <select
               value={selectedClientId ?? ''}
               onChange={(e) => setSelectedClientId(e.target.value || null)}
-              className="input pr-8 appearance-none cursor-pointer bg-[var(--bg-tertiary)] text-[var(--text-primary)] border-[var(--border)]"
+              className="input"
+              style={{ height: 32, fontSize: 12.5, paddingRight: 28, minWidth: 160 }}
               disabled={isLoading}
             >
               <option value="">All clients</option>
@@ -63,35 +67,38 @@ function KnowledgePageContent() {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
-            <ChevronDown
-              size={13}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none"
-            />
+            <ChevronDown size={12} style={{ position: 'absolute', right: 8, color: 'var(--ink-4)', pointerEvents: 'none' }} />
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-0.5 bg-[var(--bg-tertiary)] rounded-lg p-0.5">
+          <div style={{ display: 'flex', gap: 2, background: 'var(--surface-sunk)', borderRadius: 8, padding: 3 }}>
             <button
               onClick={() => setActiveTab('graph')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors ${
-                activeTab === 'graph'
-                  ? 'bg-[var(--gold)] text-[var(--bg-primary)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 500,
+                background: activeTab === 'graph' ? 'var(--surface)' : 'transparent',
+                color: activeTab === 'graph' ? 'var(--ink)' : 'var(--ink-3)',
+                border: activeTab === 'graph' ? '1px solid var(--line)' : '1px solid transparent',
+                boxShadow: activeTab === 'graph' ? 'var(--shadow-1)' : 'none',
+                cursor: 'pointer', transition: 'all 150ms',
+              }}
             >
-              <Network size={13} />
-              Graph
+              <Network size={13} /> Graph
             </button>
             <button
               onClick={() => setActiveTab('documents')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors ${
-                activeTab === 'documents'
-                  ? 'bg-[var(--gold)] text-[var(--bg-primary)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-              }`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 500,
+                background: activeTab === 'documents' ? 'var(--surface)' : 'transparent',
+                color: activeTab === 'documents' ? 'var(--ink)' : 'var(--ink-3)',
+                border: activeTab === 'documents' ? '1px solid var(--line)' : '1px solid transparent',
+                boxShadow: activeTab === 'documents' ? 'var(--shadow-1)' : 'none',
+                cursor: 'pointer', transition: 'all 150ms',
+              }}
             >
-              <FileText size={13} />
-              Documents
+              <FileText size={13} /> Documents
             </button>
           </div>
         </div>
@@ -103,35 +110,55 @@ function KnowledgePageContent() {
           selectedClientId ? (
             <KnowledgeGraph clientId={selectedClientId} />
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-              <Network size={40} className="text-[var(--text-muted)]" />
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', textAlign: 'center', gap: 12 }}>
+              <Network size={40} style={{ color: 'var(--ink-4)' }} />
               <div>
-                <p className="text-sm text-[var(--text-secondary)]">Select a client to view their knowledge graph</p>
-                <p className="text-xs text-[var(--text-muted)] mt-1">
-                  Entities and relationships are extracted during sessions
+                <p style={{ fontSize: 13, color: 'var(--ink-2)' }}>Select a client to view their knowledge graph</p>
+                <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 4 }}>
+                  Entities and relationships are extracted during sessions and document ingestion
                 </p>
               </div>
-              {clientList.length > 0 && (
-                <div className="flex flex-wrap gap-2 justify-center mt-2">
-                  {clientList.slice(0, 6).map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => setSelectedClientId(c.id)}
-                      className="badge badge-gold hover:opacity-80 transition-opacity cursor-pointer"
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
+              {clientList.length > 0 ? (
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center', marginTop: 8 }}>
+                    {clientList.slice(0, 6).map((c) => (
+                      <button key={c.id} onClick={() => setSelectedClientId(c.id)} className="ax-btn">
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setActiveTab('documents')}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, marginTop: 4,
+                      padding: '7px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 500,
+                      background: 'var(--surface)', border: '1px solid var(--line)',
+                      color: 'var(--ink-2)', cursor: 'pointer',
+                    }}
+                  >
+                    <Upload size={13} /> Upload documents
+                  </button>
+                </>
+              ) : (
+                <Link
+                  href="/clients"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, marginTop: 8,
+                    padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 500,
+                    background: 'var(--primary)', color: '#fff', textDecoration: 'none',
+                  }}
+                >
+                  <Upload size={13} /> Create your first deal to get started
+                </Link>
               )}
             </div>
           )
         ) : (
           <div className="h-full overflow-y-auto">
             <DocumentViewer
-            {...(selectedClientId !== null ? { clientId: selectedClientId } : {})}
-            {...(docParam !== null ? { initialDocumentId: docParam } : {})}
-          />
+              {...(selectedClientId !== null ? { clientId: selectedClientId } : {})}
+              {...(docParam !== null ? { initialDocumentId: docParam } : {})}
+            />
           </div>
         )}
       </div>

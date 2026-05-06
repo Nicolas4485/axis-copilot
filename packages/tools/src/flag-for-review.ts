@@ -1,7 +1,18 @@
-// flag_for_review — Push to Redis review queue for human review
+// flag_for_review — Persist a review flag as a SYSTEM message on the session
 // Used by: All agents
 
+import type { PrismaClient } from '@prisma/client'
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
+
+let prismaInstance: PrismaClient | null = null
+
+async function getPrisma(): Promise<PrismaClient> {
+  if (!prismaInstance) {
+    const { PrismaClient } = await import('@prisma/client')
+    prismaInstance = new PrismaClient()
+  }
+  return prismaInstance
+}
 
 export interface FlagForReviewInput {
   fact: string
@@ -50,20 +61,15 @@ export async function flagForReview(
       status: 'pending',
     }
 
-    // TODO: Push to Redis review queue
-    // await redis.rpush('axis:review:queue', JSON.stringify(flag))
-    // await redis.sadd(`axis:review:session:${sessionId}`, flagId)
-
-    // TODO: Also store as SYSTEM message in the session
-    // await prisma.message.create({
-    //   data: {
-    //     sessionId,
-    //     role: 'SYSTEM',
-    //     content: `⚠️ FLAGGED FOR REVIEW: ${fact}\nReason: ${reason}`,
-    //     mode: 'intake',
-    //     metadata: flag,
-    //   },
-    // })
+    const db = await getPrisma()
+    await db.message.create({
+      data: {
+        sessionId,
+        role: 'SYSTEM',
+        content: `FLAGGED FOR REVIEW: ${fact}\nReason: ${reason}`,
+        metadata: flag,
+      },
+    })
 
     console.log(`[FlagForReview] ${flagId}: "${fact}" — ${reason}`)
 

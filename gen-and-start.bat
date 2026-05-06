@@ -1,0 +1,6 @@
+@echo off
+cd /d C:\Users\sakrn\Documents\projects\axis-copilot
+echo Generating Prisma client...
+call node_modules\.bin\prisma generate --schema=prisma\schema.prisma
+echo Generation done, starting dev server...
+pnpm dev

@@ -145,11 +145,17 @@ export class LocalClient {
       const content: InferenceContentBlock[] = []
       let stopReason: InferenceResponse['stopReason'] = 'end_turn'
 
+      // Qwen3 emits <think>...</think> reasoning blocks in non-streaming responses.
+      // Strip them so downstream parsers (JSON extractors, classifiers) see clean output.
+      const stripThinking = (raw: string): string =>
+        raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+      const cleanedContent = stripThinking(data.message.content ?? '')
+
       // Handle tool calls if present
       if (data.message.tool_calls && data.message.tool_calls.length > 0) {
         // Add any text content before tool calls
-        if (data.message.content.trim()) {
-          content.push({ type: 'text', text: data.message.content })
+        if (cleanedContent) {
+          content.push({ type: 'text', text: cleanedContent })
         }
 
         for (const toolCall of data.message.tool_calls) {
@@ -162,7 +168,7 @@ export class LocalClient {
         }
         stopReason = 'tool_use'
       } else {
-        content.push({ type: 'text', text: data.message.content })
+        content.push({ type: 'text', text: cleanedContent })
       }
 
       this.available = true

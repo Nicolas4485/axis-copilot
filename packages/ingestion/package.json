@@ -6,22 +6,27 @@
   "main": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run"
   },
   "dependencies": {
     "@axis/inference": "workspace:*",
     "@axis/knowledge-graph": "workspace:*",
     "@axis/types": "workspace:*",
     "@prisma/client": "^5.14.0",
+    "@types/adm-zip": "^0.5.8",
+    "adm-zip": "^0.5.17",
     "bullmq": "^5.0.0",
     "ioredis": "^5.10.1",
     "mammoth": "^1.8.0",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "pdf2pic": "^3.2.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/pdf-parse": "^1.1.4",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.1"
   },
   "exports": {
     ".": {

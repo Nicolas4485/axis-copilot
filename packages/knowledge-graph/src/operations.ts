@@ -135,8 +135,9 @@ export class GraphOperations {
   ): Promise<NodeWithRelationships | null> {
     const maxDepth = Math.min(depth, 4) // Cap at 4 for performance
 
+    // Backtick-escape each type to handle multi-word labels (e.g. "user stories")
     const relFilter = relTypes && relTypes.length > 0
-      ? `:${relTypes.join('|')}`
+      ? `:${relTypes.map((t) => `\`${t}\``).join('|')}`
       : ''
 
     const cypher = `
@@ -212,34 +213,38 @@ export class GraphOperations {
 
   /**
    * Get the full subgraph for a client — all nodes and relationships
-   * connected to the client node within 3 hops.
+   * belonging to this client.
+   *
+   * Nodes are identified by clientId prefix in their id: `${clientId}_*`.
+   * This covers all existing data without requiring a migration.
    */
   async getClientSubgraph(clientId: string): Promise<Subgraph | null> {
-    // Return relationships as maps that include the custom .id properties of
-    // start/end nodes — the raw Neo4j relationship object only has internal
-    // element IDs, so we must project fromId/toId via Cypher.
+    const prefix = `${clientId}_`
+    // Include the Client node itself (id = clientId, no underscore suffix)
+    // AND all prefixed entity nodes. A relationship is included when EITHER
+    // endpoint matches — this makes relationships to/from the Client node visible.
     const cypher = `
-      MATCH (client:Client {id: $clientId})
-      OPTIONAL MATCH (client)-[*..3]-(related)
-      WITH client, collect(DISTINCT related) AS relatedNodes
-      UNWIND relatedNodes AS node
+      MATCH (n)
+      WHERE n.id STARTS WITH $prefix OR n.id = $clientId
       OPTIONAL MATCH (a)-[r]->(b)
-      WHERE (a = node OR a = client) AND (b IN relatedNodes OR b = client)
-      RETURN client,
-             collect(DISTINCT node) AS nodes,
+      WHERE (a.id STARTS WITH $prefix OR a.id = $clientId)
+        AND (b.id STARTS WITH $prefix OR b.id = $clientId)
+      RETURN collect(DISTINCT n) AS nodes,
              collect(DISTINCT {relType: type(r), fromId: a.id, toId: b.id}) AS rels
     `
 
-    const result = await this.client.query(cypher, { clientId })
+    const result = await this.client.query(cypher, { prefix, clientId })
     if (!result || result.records.length === 0) return null
 
     const record = result.records[0]
     if (!record) return null
-    const clientNode = this.recordToNode(record.get('client'), 'Client')
-    const rawNodes = record.get('nodes') as unknown[]
-    const rawRels = record.get('rels') as Array<{ relType: string; fromId: string; toId: string } | null>
 
-    const nodes: GraphNode[] = [clientNode]
+    const rawNodes = record.get('nodes') as unknown[]
+    const rawRels  = record.get('rels')  as Array<{ relType: string; fromId: string; toId: string } | null>
+
+    if (rawNodes.length === 0) return null
+
+    const nodes: GraphNode[] = []
     for (const n of rawNodes) {
       if (n !== null) {
         nodes.push(this.recordToNode(n, this.detectLabel(n)))
@@ -266,9 +271,12 @@ export class GraphOperations {
    * but different property values.
    */
   async detectConflicts(clientId?: string): Promise<GraphConflict[]> {
+    // Always scope conflicts to avoid cross-client data leakage.
+    // When clientId is provided: return conflicts where both nodes belong to that client.
+    // When clientId is null: return conflicts where both nodes are unscoped (no client).
     const clientFilter = clientId
-      ? 'WHERE a.clientId = $clientId OR b.clientId = $clientId'
-      : ''
+      ? 'WHERE a.clientId = $clientId AND b.clientId = $clientId'
+      : 'WHERE a.clientId IS NULL AND b.clientId IS NULL'
 
     const cypher = `
       MATCH (a)-[r:CONFLICTS_WITH]->(b)

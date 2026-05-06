@@ -4,8 +4,10 @@ import { AnalyticsDashboard } from '@/components/analytics-dashboard'
 
 export default function AnalyticsPage() {
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <AnalyticsDashboard />
+    <div className="h-full overflow-y-auto" style={{ background: 'var(--bg)' }}>
+      <div className="ax-page animate-fade-up">
+        <AnalyticsDashboard />
+      </div>
     </div>
   )
 }

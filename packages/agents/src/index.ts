@@ -50,3 +50,13 @@ export type { MemoResult, MemoSection, MemoProgressEvent } from './memo-writer.j
 // Sector knowledge base
 export { findSectorBenchmark, formatBenchmarkForPrompt, listSectors } from './sector-benchmarks.js'
 export type { SectorBenchmark } from './sector-benchmarks.js'
+
+// LBO calculator
+export { computeLBO, extractLBOInputs, formatLBOBlock } from './lbo-calculator.js'
+export type { LBOInputs, LBOResult, ScenarioResult } from './lbo-calculator.js'
+
+// Parallel specialists — commercial and risk pre-pass
+export { runCommercialAnalysis, formatCommercialBlock } from './specialists/commercial-specialist.js'
+export type { CommercialAnalysis } from './specialists/commercial-specialist.js'
+export { runRiskAnalysis, formatRiskBlock } from './specialists/risk-specialist.js'
+export type { RiskAnalysis, RiskItem } from './specialists/risk-specialist.js'

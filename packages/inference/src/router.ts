@@ -1,10 +1,9 @@
 // Model Router — maps tasks to the correct backend (local Qwen3 or Anthropic)
 //
-// Local-first routing:
-//   classify, entity_extract, entity_verify  → Qwen3 8B via Ollama (fallback: Haiku)
-//
-// Anthropic-only routing:
-//   Everything else → Haiku / Sonnet / Sonnet+Opus advisor
+// Three routing modes:
+//   primary:'local'  — Qwen3 8B via Ollama first, Haiku fallback (when Ollama is down)
+//   primary:'claude' — Haiku/Sonnet only, no local fallback
+//   primary:'claude' + localFallback:true — Haiku first, Qwen3 fallback (ingestion tasks)
 
 import type { InferenceTask, ClaudeModel } from './types.js'
 
@@ -19,26 +18,29 @@ export interface RouteTarget {
   advisorMaxUses?: number | undefined
   /** Max output tokens for this task */
   maxTokens: number
-  /** Whether to use JSON mode */
+  /** Whether to use JSON mode (Ollama format:json) */
   jsonMode: boolean
+  /** When true: try Claude first, fall back to Qwen3 if Claude fails */
+  localFallback?: boolean
 }
 
 /**
  * Routing table: task → backend selection.
  *
- * Local (Qwen3 8B via Ollama) — free, fast for pipeline tasks:
- *   classify, entity_extract, entity_verify
- *   Falls back to Claude Haiku when Ollama is unavailable.
- *
- * Haiku (fast, cheap):
- *   doc_type_detect, client_attribute, contextual_retrieval,
- *   query_expansion, relevance_score
+ * Sonnet + Opus advisor (complex reasoning):
+ *   agent_response, user_response, user_report
  *
  * Sonnet (balanced):
  *   context_compress, session_summary, user_email
  *
- * Sonnet + Opus advisor (complex reasoning):
- *   agent_response, user_response, user_report
+ * Haiku + Qwen3 fallback (ingestion pipeline):
+ *   classify, entity_extract, entity_verify,
+ *   contextual_retrieval, doc_type_detect, client_attribute,
+ *   query_expansion, relevance_score
+ *   → Haiku is primary; Qwen3 takes over if Anthropic API is unavailable.
+ *
+ * Local-only (Qwen3 primary → Haiku fallback):
+ *   (none — all ingestion tasks now run Haiku-first)
  */
 const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
   // ─── Sonnet + Opus advisor — complex reasoning with cost efficiency ──
@@ -47,7 +49,7 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     claudeModel: 'sonnet',
     advisor: 'opus',
     advisorMaxUses: 3,
-    maxTokens: 4096,
+    maxTokens: 16000,
     jsonMode: false,
   },
   user_response: {
@@ -55,7 +57,7 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     claudeModel: 'sonnet',
     advisor: 'opus',
     advisorMaxUses: 3,
-    maxTokens: 4096,
+    maxTokens: 16000,
     jsonMode: false,
   },
   user_report: {
@@ -63,7 +65,7 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     claudeModel: 'sonnet',
     advisor: 'opus',
     advisorMaxUses: 3,
-    maxTokens: 4096,
+    maxTokens: 16000,
     jsonMode: false,
   },
 
@@ -87,54 +89,62 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     jsonMode: false,
   },
 
-  // ─── Local (Qwen3) with Haiku fallback — pipeline tasks that don't need cloud ──
+  // ─── Haiku primary, Qwen3 fallback — ingestion pipeline ─────
+  // Haiku runs classification, extraction, chunking.
+  // If the Anthropic API is unreachable, Qwen3 8B handles it locally.
   classify: {
-    primary: 'local',
-    claudeModel: 'haiku',   // Haiku fallback when Ollama is unavailable
+    primary: 'claude',
+    claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 150,
-    jsonMode: true,
+    jsonMode: true,   // passed to Qwen3 if fallback triggers (format:json)
   },
   entity_extract: {
-    primary: 'local',
+    primary: 'claude',
     claudeModel: 'haiku',
-    maxTokens: 500,
-    jsonMode: true,
+    localFallback: true,
+    maxTokens: 1500,
+    jsonMode: false,
   },
   entity_verify: {
-    primary: 'local',
+    primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 10,
     jsonMode: false,
   },
-
-  // ─── Haiku — fast, simple cloud tasks ───────────────────────
   doc_type_detect: {
     primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 20,
     jsonMode: false,
   },
   client_attribute: {
     primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 150,
     jsonMode: true,
   },
   contextual_retrieval: {
     primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 100,
     jsonMode: false,
   },
   query_expansion: {
     primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 150,
     jsonMode: false,
   },
   relevance_score: {
     primary: 'claude',
     claudeModel: 'haiku',
+    localFallback: true,
     maxTokens: 10,
     jsonMode: false,
   },
@@ -151,6 +161,12 @@ const ROUTING_TABLE: Record<InferenceTask, RouteTarget> = {
     claudeModel: 'haiku',
     maxTokens: 250,
     jsonMode: true,
+  },
+  chart_extraction: {
+    primary: 'claude',
+    claudeModel: 'sonnet',
+    maxTokens: 1024,
+    jsonMode: false,
   },
 }
 
@@ -188,4 +204,11 @@ export function getFallback(task: InferenceTask): { target: 'claude'; model: Cla
  */
 export function getModelForTask(task: InferenceTask): ClaudeModel {
   return ROUTING_TABLE[task].claudeModel
+}
+
+/**
+ * True for Haiku-primary tasks that fall back to Qwen3 when the API is unavailable.
+ */
+export function hasLocalFallback(task: InferenceTask): boolean {
+  return ROUTING_TABLE[task].localFallback === true
 }

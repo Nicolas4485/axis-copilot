@@ -5,9 +5,10 @@ import type { DocumentParser } from './types.js'
 import type { ParsedDocument, ParsedSection, TypeSignal } from '../types.js'
 
 export class GSlidesParser implements DocumentParser {
+  // Only handles Google's native Slides format (plain-text export from Drive API / Slides API).
+  // Actual PPTX binary files are handled by PptxParser.
   supportedMimeTypes = [
     'application/vnd.google-apps.presentation',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   ]
 
   async parse(content: Buffer, filename: string): Promise<ParsedDocument> {

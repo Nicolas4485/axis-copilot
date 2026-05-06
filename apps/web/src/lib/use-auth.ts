@@ -1,23 +1,21 @@
 'use client'
 
-// useAuth — redirects to /login if axis_token is missing from localStorage.
-// Use this in any layout or client component that wraps protected pages.
+// useAuth — verifies the httpOnly cookie session via AuthContext (single /api/auth/me call).
+// Returns { ready: true } once confirmed. Redirects to /login on 401.
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuthContext } from './providers'
 
 export function useAuth(): { ready: boolean } {
   const router = useRouter()
-  const [ready, setReady] = useState(false)
+  const { isAuthenticated, isLoading } = useAuthContext()
 
   useEffect(() => {
-    const token = localStorage.getItem('axis_token')
-    if (!token) {
+    if (!isLoading && !isAuthenticated) {
       router.replace('/login')
-    } else {
-      setReady(true)
     }
-  }, [router])
+  }, [isLoading, isAuthenticated, router])
 
-  return { ready }
+  return { ready: !isLoading && isAuthenticated }
 }

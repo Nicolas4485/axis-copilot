@@ -35,13 +35,18 @@ interface JwtPayload {
 }
 
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization
-  if (!authHeader?.startsWith('Bearer ')) {
+  // Cookie-first: httpOnly cookie set by auth routes.
+  // Bearer fallback: API key clients or programmatic access.
+  const cookieToken  = (req.cookies as Record<string, string | undefined>)?.['axis_token']
+  const authHeader   = req.headers.authorization
+  const bearerToken  = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined
+  const token        = cookieToken ?? bearerToken
+
+  if (!token) {
     res.status(401).json({ error: 'Unauthorized', code: 'NO_TOKEN', requestId: req.requestId })
     return
   }
 
-  const token = authHeader.slice(7)
   const secret = process.env['JWT_SECRET']
   if (!secret) {
     throw new Error('JWT_SECRET env var is required')
@@ -49,7 +54,8 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
 
   try {
     const payload = jwt.verify(token, secret) as JwtPayload
-    req.userId = payload.userId
+    req.userId    = payload.userId
+    req.userEmail = payload.email
     next()
   } catch {
     res.status(401).json({ error: 'Unauthorized', code: 'INVALID_TOKEN', requestId: req.requestId })
@@ -66,6 +72,16 @@ export const generalRateLimit = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: 'Too many requests', code: 'RATE_LIMITED' },
+})
+
+// 30 req/min per userId — applied to POST/PATCH/DELETE on deals and clients
+export const writeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => req.userId ?? req.ip ?? 'anonymous',
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Write rate limit exceeded', code: 'WRITE_RATE_LIMITED' },
 })
 
 // 20 req/min per userId — applied specifically to POST /api/sessions/:id/messages

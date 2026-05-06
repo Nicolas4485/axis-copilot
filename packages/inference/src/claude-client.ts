@@ -79,8 +79,14 @@ export class ClaudeClient {
       advisorMaxUses?: number | undefined
     }
   ): Promise<InferenceResponse> {
+    // Re-read key lazily — handles cases where .env was loaded after construction
     if (!this.client) {
-      throw new Error('ANTHROPIC_API_KEY not configured — Claude calls unavailable. Set the key in .env or use local inference only.')
+      const lateKey = process.env['ANTHROPIC_API_KEY']
+      if (lateKey) {
+        this.client = new Anthropic({ apiKey: lateKey })
+      } else {
+        throw new Error('ANTHROPIC_API_KEY not configured — Claude calls unavailable. Set the key in .env or use local inference only.')
+      }
     }
 
     const startTime = Date.now()
@@ -223,6 +229,76 @@ export class ClaudeClient {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
       throw new Error(`Claude ${model} completion failed: ${errorMsg}`)
+    }
+  }
+
+  /**
+   * Send a vision request to Claude Sonnet — image + text in user turn.
+   * Used for chart/figure extraction from PDF page renders.
+   * No caching: each image call is unique, caching provides no benefit.
+   */
+  async generateWithVision(
+    systemPrompt: string,
+    userText: string,
+    imageBase64: string,
+    imageMimeType: 'image/png' | 'image/jpeg',
+    maxTokens = 1024
+  ): Promise<string> {
+    if (!this.client) {
+      const lateKey = process.env['ANTHROPIC_API_KEY']
+      if (lateKey) {
+        this.client = new Anthropic({ apiKey: lateKey })
+      } else {
+        throw new Error('ANTHROPIC_API_KEY not configured — vision calls unavailable.')
+      }
+    }
+
+    const startTime = Date.now()
+    const modelId = MODEL_IDS['sonnet']
+
+    try {
+      const response = await this.client.messages.create({
+        model: modelId,
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: imageMimeType, data: imageBase64 },
+            },
+            { type: 'text', text: userText },
+          ],
+        }],
+      })
+
+      const latencyMs = Date.now() - startTime
+      const inputTokens = response.usage.input_tokens
+      const outputTokens = response.usage.output_tokens
+
+      if (this.onCostEntry) {
+        this.onCostEntry({
+          sessionId: null,
+          userId: 'system',
+          task: 'chart_extraction',
+          model: modelId,
+          inputTokens,
+          outputTokens,
+          cacheHit: false,
+          costUsd: ((inputTokens * PRICING.sonnet.input) + (outputTokens * PRICING.sonnet.output)) / 1_000_000,
+          latencyMs,
+          timestamp: new Date().toISOString(),
+        })
+      }
+
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      throw new Error(`Claude vision call failed: ${errorMsg}`)
     }
   }
 }

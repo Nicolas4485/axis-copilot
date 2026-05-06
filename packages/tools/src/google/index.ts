@@ -14,10 +14,14 @@ export {
   listFiles,
   getFileMetadata,
   downloadFile,
+  downloadFileAuto,
+  getEffectiveMimeType,
   watchFile,
   stopWatch,
 } from './drive.js'
 export type { DriveFile, DriveListResult } from './drive.js'
+
+export { getSlidesText } from './slides.js'
 
 export { createDocument, appendSection, appendText } from './docs.js'
 export type { CreatedDoc } from './docs.js'

@@ -1,14 +1,14 @@
-// Auth routes — login (Google OAuth + dev mode) and registration
+// Auth routes — login (Google OAuth + dev mode), registration, /me, /logout
 //
 // Flow (production):
 //   1. POST /api/auth/login  → returns { authUrl } — redirect browser here
-//   2. GET  /api/auth/google/callback → exchanges code, upserts user, returns JWT in cookie + JSON
+//   2. GET  /api/auth/google/callback → exchanges code, upserts user, sets httpOnly cookie, redirect to /
 //
 // Flow (development):
-//   POST /api/auth/login → auto-creates/finds dev user, returns JWT immediately — no Google needed
+//   POST /api/auth/login → auto-creates/finds dev user, sets httpOnly cookie, returns { user }
 //
 // Flow (register):
-//   POST /api/auth/register → creates user by email/name, returns JWT (no OAuth required)
+//   POST /api/auth/register → creates user, sets httpOnly cookie, returns { user }
 
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { Router } from 'express'
@@ -16,8 +16,16 @@ import type { Request, Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
+import { authenticate } from '../middleware/auth.js'
 
 export const authRouter = Router()
+
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env['NODE_ENV'] === 'production',
+  sameSite: 'lax' as const,
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -81,7 +89,8 @@ authRouter.post('/login', async (req: Request, res: Response) => {
         })
       }
       const token = issueJwt(user.id, user.email)
-      res.json({ token, user: { id: user.id, email: user.email, name: user.name }, requestId: req.requestId })
+      res.cookie('axis_token', token, COOKIE_OPTIONS)
+      res.json({ user: { id: user.id, email: user.email, name: user.name }, requestId: req.requestId })
       return
     }
 
@@ -168,9 +177,8 @@ authRouter.get('/google/callback', async (req: Request, res: Response) => {
     })
 
     const token = issueJwt(user.id, user.email)
-
-    // Redirect to frontend with token in query param — frontend stores it in localStorage
-    res.redirect(`${webBase}/login?token=${encodeURIComponent(token)}`)
+    res.cookie('axis_token', token, COOKIE_OPTIONS)
+    res.redirect(webBase + '/')
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     console.error('[Auth] Google callback error:', errorMsg)
@@ -207,16 +215,38 @@ authRouter.post('/register', async (req: Request, res: Response) => {
     })
 
     const token = issueJwt(user.id, user.email)
-    res.status(201).json({ token, user: { id: user.id, email: user.email, name: user.name }, requestId: req.requestId })
+    res.cookie('axis_token', token, COOKIE_OPTIONS)
+    res.status(201).json({ user: { id: user.id, email: user.email, name: user.name }, requestId: req.requestId })
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : 'Unknown error'
     res.status(500).json({ error: 'Registration failed', code: 'REGISTER_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
 
+// ─── GET /api/auth/me ─────────────────────────────────────────────
+// Returns the authenticated user from cookie — used by frontend on page load.
+
+authRouter.get('/me', authenticate, async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId! },
+      select: { id: true, email: true, name: true, role: true, createdAt: true },
+    })
+    if (!user) {
+      res.status(404).json({ error: 'User not found', code: 'NOT_FOUND', requestId: req.requestId })
+      return
+    }
+    res.json({ user, requestId: req.requestId })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to get user', code: 'ME_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})
+
 // ─── POST /api/auth/logout ────────────────────────────────────────
-// Client just discards the JWT — this is a convenience acknowledgement.
+// Clears the httpOnly auth cookie.
 
 authRouter.post('/logout', (_req: Request, res: Response) => {
+  res.clearCookie('axis_token')
   res.json({ success: true })
 })

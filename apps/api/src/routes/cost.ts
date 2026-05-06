@@ -34,3 +34,30 @@ costRouter.get('/summary', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Failed to fetch cost summary', code: 'COST_ERROR', details: errorMsg, requestId: req.requestId })
   }
 })
+
+/**
+ * GET /api/cost/analytics — Cost analytics shaped for the analytics dashboard
+ * Query params: days (default 30)
+ */
+costRouter.get('/analytics', async (req: Request, res: Response) => {
+  try {
+    const days = parseInt(req.query['days'] as string || '30', 10)
+    const costTracker = engine.getCostTracker()
+    const summary = await costTracker.getUserCostSummary(req.userId!, days)
+
+    res.json({
+      totalUsd: summary.totalCostUsd,
+      byModel: Object.values(summary.byModel).map((m) => ({
+        model: m.model,
+        costUsd: m.costUsd,
+        callCount: m.calls,
+      })),
+      byDay: summary.byDay.map((d) => ({ date: d.date, costUsd: d.costUsd })),
+      bySession: [],
+      requestId: req.requestId,
+    })
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+    res.status(500).json({ error: 'Failed to fetch cost analytics', code: 'COST_ERROR', details: errorMsg, requestId: req.requestId })
+  }
+})

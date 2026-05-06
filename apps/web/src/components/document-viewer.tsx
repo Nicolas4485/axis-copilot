@@ -100,10 +100,18 @@ export function DocumentViewer({ clientId, initialDocumentId }: DocumentViewerPr
 
   if (docList.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-center gap-2">
+      <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
         <FileText size={32} className="text-[var(--text-muted)]" />
-        <p className="text-sm text-[var(--text-secondary)]">No documents ingested yet</p>
-        <p className="text-xs text-[var(--text-muted)]">Upload documents via the ingestion pipeline</p>
+        <div>
+          <p className="text-sm text-[var(--text-secondary)]">No documents ingested yet</p>
+          <p className="text-xs text-[var(--text-muted)] mt-1">Upload a document to start building your knowledge base</p>
+        </div>
+        <a
+          href="/knowledge?tab=documents&upload=true"
+          className="btn-primary text-xs px-4 py-2"
+        >
+          Upload your first document
+        </a>
       </div>
     )
   }

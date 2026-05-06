@@ -3,6 +3,19 @@
 
 import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
 
+// Module-level singletons — one connection pool for the process lifetime
+let _prisma: import('@prisma/client').PrismaClient | null = null
+let _rag: import('@axis/rag').RAGEngine | null = null
+
+async function getRAG(): Promise<import('@axis/rag').RAGEngine> {
+  if (_rag) return _rag
+  const { RAGEngine } = await import('@axis/rag')
+  const { PrismaClient } = await import('@prisma/client')
+  _prisma = new PrismaClient()
+  _rag = new RAGEngine({ prisma: _prisma })
+  return _rag
+}
+
 export interface SearchKnowledgeBaseInput {
   query: string
   clientId?: string
@@ -37,10 +50,7 @@ export async function searchKnowledgeBase(
   }
 
   try {
-    // Import RAGEngine and PrismaClient dynamically to avoid circular deps
-    const { RAGEngine } = await import('@axis/rag')
-    const { PrismaClient } = await import('@prisma/client')
-    const rag = new RAGEngine({ prisma: new PrismaClient() })
+    const rag = await getRAG()
 
     const result = await rag.query(query, context.userId, clientId ?? null, {
       maxChunks: limit,

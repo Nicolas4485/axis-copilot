@@ -61,12 +61,18 @@ const COST_ENTRY_TTL_SECONDS = 30 * 24 * 60 * 60  // 30 days
 export class CostTracker {
   // In-memory store until Redis is wired up
   private entries: CostEntry[] = []
+  private onPersist: ((entry: CostEntry) => void) | undefined = undefined
+
+  constructor(options?: { onPersist?: (entry: CostEntry) => void }) {
+    this.onPersist = options?.onPersist
+  }
 
   /**
    * Record a cost entry from a model call.
    */
   async record(entry: CostEntry): Promise<void> {
     this.entries.push(entry)
+    this.onPersist?.(entry)
 
     console.log(
       `[Cost] ${entry.task} via ${entry.model}: ` +

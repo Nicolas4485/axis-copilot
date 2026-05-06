@@ -2,7 +2,6 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { health } from '@/lib/api'
-import { Cpu, HardDrive, Wifi } from 'lucide-react'
 
 export function HealthIndicator() {
   const { data } = useQuery({
@@ -13,25 +12,34 @@ export function HealthIndicator() {
 
   if (!data) return null
 
-  const anthropicOk = data.anthropic === 'ok'
-  const services = [data.db, data.redis, data.neo4j, data.anthropic].filter((s) => s === 'ok').length
+  const services = [
+    { label: 'DB',       status: data.db        },
+    { label: 'Redis',    status: data.redis      },
+    { label: 'Neo4j',    status: data.neo4j      },
+    { label: 'AI',       status: data.anthropic  },
+  ]
+
+  const okCount = services.filter((s) => s.status === 'ok').length
+  const allOk   = okCount === services.length
 
   return (
-    <div className="flex items-center gap-3 text-xs">
-      <div className="flex items-center gap-1.5" title={`Anthropic: ${data.anthropic}`}>
-        <Cpu size={14} className={anthropicOk ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'} />
-        <span className={anthropicOk ? 'text-[var(--success)]' : 'text-[var(--text-muted)]'}>
-          Claude {anthropicOk ? 'Active' : 'Off'}
-        </span>
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-[var(--border)]
+                 bg-[var(--bg-secondary)] cursor-default"
+      title={services.map((s) => `${s.label}: ${s.status}`).join(' · ')}
+    >
+      {/* Aggregate dot */}
+      <div className="relative flex items-center justify-center">
+        <div className={`w-1.5 h-1.5 rounded-full ${allOk ? 'bg-[var(--success)]' : 'bg-[var(--warning)]'}`} />
+        {allOk && (
+          <div className="absolute w-1.5 h-1.5 rounded-full bg-[var(--success)] animate-ping opacity-40" />
+        )}
       </div>
-      <div className="flex items-center gap-1.5" title={`Services: ${services}/4 online`}>
-        <Wifi size={14} className={services === 4 ? 'text-[var(--success)]' : 'text-[var(--warning)]'} />
-        <span className="text-[var(--text-muted)]">{services}/4</span>
-      </div>
-      <div className="flex items-center gap-1.5" title={`Version: ${data.version}`}>
-        <HardDrive size={14} className="text-[var(--text-muted)]" />
-        <span className="text-[var(--text-muted)]">v{data.version}</span>
-      </div>
+      <span className="text-[11px] font-mono text-[var(--text-muted)]">
+        {okCount}/{services.length} services
+      </span>
+      <span className="text-[var(--border)]">·</span>
+      <span className="text-[11px] font-mono text-[var(--text-muted)]">v{data.version}</span>
     </div>
   )
 }

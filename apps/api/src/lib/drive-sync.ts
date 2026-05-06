@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { prisma } from './prisma.js'
 import { google } from '@axis/tools'
-const { getValidToken, listFiles: driveListFiles, downloadFile: driveDownloadFile } = google
+const { getValidToken, listFiles: driveListFiles, downloadFileAuto: driveDownloadFile } = google
 type DriveFile = Awaited<ReturnType<typeof driveListFiles>>['files'][number]
 import type { IngestionResult } from '@axis/ingestion'
 
@@ -277,14 +277,15 @@ export async function syncDriveFolder(
       return
     }
 
-    // Download content
+    // Download content — downloadFileAuto returns the actual content type after
+    // any Google Workspace export so the pipeline picks the right parser.
     console.log(`[DriveSync] Downloading: ${path} (${file.mimeType})`)
-    const content = await driveDownloadFile(accessToken, file.id, file.mimeType)
+    const { content, contentType } = await driveDownloadFile(accessToken, file.id, file.mimeType)
 
     const result = await runPipelineWorker({
       fileContent: content.toString('base64'),
       filename: file.name,
-      mimeType: file.mimeType,
+      mimeType: contentType,
       userId,
       options: {
         ...(clientId ? { clientId } : {}),
