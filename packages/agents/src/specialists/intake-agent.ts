@@ -22,6 +22,12 @@ const INTAKE_CONFIG: AgentConfig = {
     'save_client_context',   // Persist structured client intelligence after intake
     'update_client_record',  // Update client fields as new information surfaces
     'flag_for_review',       // Surface data conflicts and gaps for human resolution
+    // ─── Browser tools (Phase B) — verify client identity, look at their site/posts ───
+    'browser_state',         // Check what Nicolas is looking at when first onboarding a client
+    'browser_visit',         // Open the client's website / news pages for verification
+    'browser_close',         // Clean up
+    'browser_scrape',        // One-shot read of client homepage, "about", recent press
+    'browser_screenshot',    // Visual capture of brand/site as part of intake record
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }

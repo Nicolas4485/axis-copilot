@@ -21,6 +21,15 @@ const DUE_DILIGENCE_CONFIG: AgentConfig = {
     'get_competitive_context',   // Competitor profiles, market share estimates, and positioning data for moat assessment
     'save_analysis',             // Persist structured DD findings keyed to deal — consumed by memo-writer for IC memo sections
     'flag_for_review',           // Flag red flags, unverifiable claims, aggressive add-backs, and data gaps for human review
+    // ─── Browser tools (Phase B) — verify management bios, market sizing claims, regulatory checks ───
+    'browser_state',             // Check what Nicolas is looking at before drilling into a finding
+    'browser_visit',             // Open Companies House, SEC filings, regulator sites, target's investor pages
+    'browser_close',             // Clean up after a flow completes
+    'browser_scrape',            // One-shot read of public filings / news / industry reports
+    'browser_screenshot',        // Capture financial tables, charts, or regulatory disclosures as evidence
+    'browser_scroll',            // Long filings (10-Ks, prospectuses, regulator dockets)
+    'browser_click',             // Drill into linked exhibits / disclosure sub-pages
+    'browser_fill',              // Type into regulator search forms (never auto-submits)
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections via feedback loop (3C.3)
 }

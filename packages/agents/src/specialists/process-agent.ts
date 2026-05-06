@@ -24,6 +24,15 @@ const PROCESS_CONFIG: AgentConfig = {
     'flag_for_review',            // Flag high-risk automation points requiring human oversight
     'ingest_document',            // Ingest process diagrams, SOPs, or architecture docs for analysis
     'ask_clarification',          // ONE-TIME use: ask user a blocking question when answer materially changes analysis
+    // ─── Browser tools (Phase B) — research SaaS dashboards, automation tool docs, vendor sites ───
+    'browser_state',              // Inspect what Nicolas is currently looking at before suggesting a redesign
+    'browser_visit',              // Open vendor docs / SaaS dashboards for verification
+    'browser_close',              // Clean up tabs after a flow completes
+    'browser_scrape',             // One-shot read of automation-tool documentation, integration guides
+    'browser_screenshot',         // Capture rendered automation flows / dashboards for visual reference
+    'browser_scroll',             // Long docs, vendor pricing pages
+    'browser_click',              // Interact with vendor demo / docs
+    'browser_fill',               // Type into vendor search/filter (never auto-submits)
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: remembers past process patterns and corrections
 }

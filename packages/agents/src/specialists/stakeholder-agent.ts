@@ -27,6 +27,15 @@ const STAKEHOLDER_CONFIG: AgentConfig = {
     'update_stakeholder_influence', // Update influence/interest scores as positions shift
     'flag_for_review',            // Flag political risks, conflicting signals, and unverifiable claims
     'ask_clarification',          // ONE-TIME use: ask user a blocking question when answer materially changes analysis
+    // ─── Browser tools (Phase B) — LinkedIn profiles, news, company pages ───
+    'browser_state',              // Check what Nicolas is currently viewing before any analysis
+    'browser_visit',              // Open LinkedIn profiles / company pages, leave open for follow-up reads
+    'browser_close',              // Clean up after the flow
+    'browser_scrape',             // One-shot read of a stakeholder's LinkedIn / blog / public bio
+    'browser_screenshot',         // Capture profile/page state for evidence
+    'browser_scroll',             // LinkedIn feed pagination, news listings
+    'browser_click',              // Open posts / expand sections (cross-domain WRITE gated)
+    'browser_fill',               // Type into search boxes (never auto-submits forms with PII)
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns relationship patterns and corrections (3C.3)
 }
