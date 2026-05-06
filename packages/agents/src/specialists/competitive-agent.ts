@@ -26,6 +26,15 @@ const COMPETITIVE_CONFIG: AgentConfig = {
     'github_list_files',        // Explore our repo to verify which features are actually implemented
     'github_search_code',       // Search codebase to confirm implemented features vs. competitor capabilities
     'ask_clarification',        // ONE-TIME use: ask user a blocking question when answer materially changes analysis
+    // ─── Browser tools (Phase B) — autonomous browser control via the AXIS Chrome extension ───
+    'browser_scrape',           // Open + read + close a URL in one shot. Default for "look at competitor.com/pricing"
+    'browser_visit',            // Open a URL and keep the tab open for follow-up clicks/fills
+    'browser_close',            // Close a tab opened by browser_visit
+    'browser_state',            // Query the user's active tab — use when they say "this page" or "this site"
+    'browser_screenshot',       // Visual capture for layout-sensitive analysis (charts, dashboards)
+    'browser_scroll',           // Scroll infinite feeds (LinkedIn search results, news listings)
+    'browser_click',            // Click links/buttons. Cross-domain gated.
+    'browser_fill',             // Type into search boxes, message composers. NEVER auto-submits forms.
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }

@@ -19,11 +19,11 @@
   },
   "dependencies": {
     "@axis/agents": "workspace:*",
-    "@axis/sdk-agents": "workspace:*",
     "@axis/inference": "workspace:*",
     "@axis/ingestion": "workspace:*",
     "@axis/knowledge-graph": "workspace:*",
     "@axis/rag": "workspace:*",
+    "@axis/sdk-agents": "workspace:*",
     "@axis/tools": "workspace:*",
     "@axis/types": "workspace:*",
     "@prisma/client": "^5.14.0",
@@ -43,8 +43,8 @@
     "pptxgenjs": "^4.0.1",
     "telegraf": "^4.16.3",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0",
-    "zod": "^3.23.0"
+    "ws": "^8",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

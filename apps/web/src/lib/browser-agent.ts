@@ -92,15 +92,38 @@ export class BrowserAgent {
    * Open → read → close. The fire-and-forget primitive for one-shot research.
    */
   async scrape(url: string, options: VisitOptions = {}): Promise<ScrapeResult> {
-    const { tab, page } = await this.visit(url, options)
+    // SPAs (Skool, LinkedIn, Twitter, Notion, etc.) render content via JS
+    // after the initial HTML loads. Default to 5s post-load so most SPAs
+    // finish hydrating. Caller can override with options.waitForMs.
+    const opts: VisitOptions = {
+      ...options,
+      waitForMs: options.waitForMs ?? 5000,
+    }
+    const { tab, page } = await this.visit(url, opts)
+
+    // If the first read came back empty, the page is probably still hydrating.
+    // Wait another 3s and try once more before giving up.
+    let finalPage = page
+    if (!finalPage.text || finalPage.wordCount === 0) {
+      await sleep(3000)
+      const retry = await this.bridge.readPage({ tabId: tab.tabId })
+      if (retry.success && retry.data.text && retry.data.wordCount > 0) {
+        finalPage = retry.data
+      }
+    }
+
     await this.bridge.closeTab({ tabId: tab.tabId }).catch(() => undefined)
+
+    // Defensive defaults — agent-interactor.js may omit optional fields
+    // depending on selectors / READ_PAGE flags. Callers shouldn't have to
+    // null-check every property of a "successful" result.
     return {
-      url: page.url,
-      title: page.title,
-      text: page.text,
-      headings: page.headings,
-      wordCount: page.wordCount,
-      truncated: page.truncated,
+      url: finalPage.url ?? url,
+      title: finalPage.title ?? '',
+      text: finalPage.text ?? '',
+      headings: Array.isArray(finalPage.headings) ? finalPage.headings : [],
+      wordCount: finalPage.wordCount ?? 0,
+      truncated: finalPage.truncated ?? false,
     }
   }
 
@@ -202,6 +225,10 @@ async function unwrap<T>(p: Promise<BridgeReply<T>>): Promise<T> {
   const reply = await p
   if (!reply.success) throw new Error(reply.error)
   return reply.data
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
 }
 
 /**

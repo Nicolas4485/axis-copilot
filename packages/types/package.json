@@ -17,6 +17,11 @@
       "types": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./extension-protocol": {
+      "types": "./src/extension-protocol.ts",
+      "import": "./src/extension-protocol.ts",
+      "default": "./src/extension-protocol.ts"
     }
   }
 }

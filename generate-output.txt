@@ -1,0 +1,7 @@
+Environment variables loaded from .env
+Prisma schema loaded from prisma\schema.prisma
+Error: 
+EPERM: operation not permitted, rename 'C:\Users\sakrn\Documents\projects\axis-copilot\node_modules\.pnpm\@prisma+client@5.22.0_prisma@5.22.0\node_modules\.prisma\client\query_engine-windows.dll.node.tmp4008' -> 'C:\Users\sakrn\Documents\projects\axis-copilot\node_modules\.pnpm\@prisma+client@5.22.0_prisma@5.22.0\node_modules\.prisma\client\query_engine-windows.dll.node'
+
+
+Exit: 1 

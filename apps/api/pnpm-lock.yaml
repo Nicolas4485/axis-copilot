@@ -1,0 +1,83 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@axis/agents':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/agents
+      '@axis/inference':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/inference
+      '@axis/ingestion':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/ingestion
+      '@axis/knowledge-graph':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/knowledge-graph
+      '@axis/rag':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/rag
+      '@axis/sdk-agents':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/sdk-agents
+      '@axis/tools':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/tools
+      '@axis/types':
+        specifier: workspace:*
+        version: link:../../../../../../../../../../My Documents/projects/axis-copilot/packages/types
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
+      ws:
+        specifier: ^8.20.0
+        version: 8.20.0
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+
+packages:
+
+  dotenv@17.4.2:
+    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
+    engines: {node: '>=12'}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  ws@8.20.0:
+    resolution: {integrity: sha512-sAt8BhgNbzCtgGbt2OxmpuryO63ZoDk/sqaB/znQm94T4fCEsy/yV+7CdC1kJhOU9lboAEU7R3kquuycDoibVA==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
+snapshots:
+
+  dotenv@17.4.2: {}
+
+  typescript@5.9.3: {}
+
+  ws@8.20.0: {}
+
+  zod@3.25.76: {}

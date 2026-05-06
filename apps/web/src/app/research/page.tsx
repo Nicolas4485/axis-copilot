@@ -51,15 +51,15 @@ export default function ResearchTestPage() {
                 {r.url}
               </a>
               <div className="text-[11px] text-[var(--text-muted)] mt-2 mb-2">
-                {r.wordCount} words {r.truncated && '(truncated)'}
+                {r.wordCount ?? 0} words {r.truncated && '(truncated)'}
               </div>
-              {r.headings.length > 0 && (
+              {(r.headings?.length ?? 0) > 0 && (
                 <details className="mt-2">
                   <summary className="text-[12px] cursor-pointer text-[var(--text-muted)]">
-                    Headings ({r.headings.length})
+                    Headings ({r.headings!.length})
                   </summary>
                   <ul className="mt-2 space-y-1 text-[12px] text-[var(--text)]">
-                    {r.headings.slice(0, 20).map((h, j) => (
+                    {r.headings!.slice(0, 20).map((h, j) => (
                       <li key={j}>• {h}</li>
                     ))}
                   </ul>
@@ -70,7 +70,7 @@ export default function ResearchTestPage() {
                   Page text (first 2000 chars)
                 </summary>
                 <pre className="mt-2 text-[11px] text-[var(--text)] whitespace-pre-wrap font-mono bg-[var(--bg)] p-3 rounded max-h-64 overflow-auto">
-                  {r.text.slice(0, 2000)}
+                  {(r.text ?? '').slice(0, 2000)}
                 </pre>
               </details>
             </div>

@@ -16,6 +16,17 @@ import { exportsRouter } from './routes/exports.js'
 import { costRouter } from './routes/cost.js'
 import { ariaRouter } from './routes/aria.js'
 import { handleAriaLiveWs } from './routes/aria-live-ws.js'
+import { handleExtensionWsUpgrade, EXTENSION_WS_PATH } from './lib/extension-ws-server.js'
+import { callBrowserCommand } from './lib/browser-rpc.js'
+import { setBrowserRpcDispatch } from '@axis/agents'
+
+// Phase B: wire the browser-tool RPC dispatch. packages/agents owns the tool
+// definitions but cannot import from apps/api (no upward dep), so we inject
+// the implementation here at boot. setBrowserRpcDispatch is idempotent — safe
+// to call multiple times (last call wins). All browser_* tools route through
+// this dispatch which enforces auth, rate limits, sanitisation, and the
+// cross-domain gate. See apps/api/src/lib/browser-rpc.ts for the pipeline.
+setBrowserRpcDispatch(async (call) => callBrowserCommand(call))
 import { syncRouter } from './routes/sync.js'
 import { documentsRouter } from './routes/documents.js'
 import { userRouter } from './routes/user.js'
@@ -133,6 +144,12 @@ server.on('upgrade', (request, socket, head) => {
         ws.close(1011, 'Internal error')
       })
     })
+  } else if (pathname === EXTENSION_WS_PATH) {
+    // Phase 2 browser-agent RPC channel. Auth is done inside
+    // handleExtensionWsUpgrade via an auth message right after connect
+    // (the WebSocket constructor in extension service workers cannot set
+    // Authorization headers, so the token rides in the first message).
+    handleExtensionWsUpgrade(request, socket, head)
   } else {
     socket.destroy()
   }

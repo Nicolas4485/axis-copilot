@@ -45,6 +45,18 @@ import {
   getDealStatus, getDealStatusDefinition,
   moveDealStage, moveDealStageDefinition,
 } from '@axis/tools'
+// Browser tools — Phase B autonomous browser control. Dispatch is wired by
+// apps/api at startup via setBrowserRpcDispatch().
+import {
+  browserScrape, browserScrapeDefinition,
+  browserVisit, browserVisitDefinition,
+  browserClose, browserCloseDefinition,
+  browserScreenshot, browserScreenshotDefinition,
+  browserState, browserStateDefinition,
+  browserClick, browserClickDefinition,
+  browserFill, browserFillDefinition,
+  browserScroll, browserScrollDefinition,
+} from './tools/browser-tools.js'
 // PE tools that need CimAnalyst/MemoWriter live here to avoid circular deps
 import {
   runCimAnalysis, runCimAnalysisDefinition,
@@ -103,6 +115,16 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   move_deal_stage: { definition: moveDealStageDefinition, execute: moveDealStage },
   run_cim_analysis: { definition: runCimAnalysisDefinition, execute: runCimAnalysis },
   generate_ic_memo: { definition: generateIcMemoDefinition, execute: generateIcMemo },
+  // Browser tools — see tools/browser-tools.ts and the security pipeline in
+  // apps/api/src/lib/{browser-rpc,tool-result-sanitizer,cross-domain-gate}.ts
+  browser_scrape:     { definition: browserScrapeDefinition,     execute: browserScrape },
+  browser_visit:      { definition: browserVisitDefinition,      execute: browserVisit },
+  browser_close:      { definition: browserCloseDefinition,      execute: browserClose },
+  browser_screenshot: { definition: browserScreenshotDefinition, execute: browserScreenshot },
+  browser_state:      { definition: browserStateDefinition,      execute: browserState },
+  browser_click:      { definition: browserClickDefinition,      execute: browserClick },
+  browser_fill:       { definition: browserFillDefinition,       execute: browserFill },
+  browser_scroll:     { definition: browserScrollDefinition,     execute: browserScroll },
 }
 
 export class ToolRegistry {

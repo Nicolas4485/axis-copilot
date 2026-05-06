@@ -60,3 +60,15 @@ export { runCommercialAnalysis, formatCommercialBlock } from './specialists/comm
 export type { CommercialAnalysis } from './specialists/commercial-specialist.js'
 export { runRiskAnalysis, formatRiskBlock } from './specialists/risk-specialist.js'
 export type { RiskAnalysis, RiskItem } from './specialists/risk-specialist.js'
+
+// Browser tools — apps/api wires the RPC dispatch at startup with setBrowserRpcDispatch().
+// Tool definitions auto-register via tool-registry.ts; agents pick them up by name.
+export { setBrowserRpcDispatch } from './tools/browser-tools.js'
+export type { BrowserRpcCall, BrowserRpcResult, BrowserRpcDispatch } from './tools/browser-tools.js'
+
+// Security utilities for prompt-injection defense (used by agents that have browser tools).
+export {
+  BROWSER_SECURITY_PROMPT,
+  composeSecureSystemPrompt,
+  hasHighSeverityFlag,
+} from './security/prompt-injection-defense.js'

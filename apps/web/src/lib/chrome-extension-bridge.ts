@@ -15,11 +15,14 @@
  * agent on the server requests browser work via SSE/WS).
  */
 
+// Import from the deep subpath — apps/web is browser code, so we cannot
+// pull in @axis/types' index.ts which re-exports node:crypto via encryption.ts.
+// See packages/types/package.json → exports → "./extension-protocol".
 import {
   BrowserAgentMSG,
   ExtensionMSG,
   type BrowserAgentCommand,
-} from '@axis/types'
+} from '@axis/types/extension-protocol'
 
 export type BridgeReply<T = unknown> =
   | { success: true; data: T }

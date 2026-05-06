@@ -83,6 +83,16 @@ export function ResearchPrompt({ url, agentName, onComplete, onDismiss }: Resear
         return
       }
       const result = await agent.scrape(trimmed)
+      // If we got nothing back, surface a useful warning instead of pretending
+      // it worked. Common causes: SPA still hydrating, PDF (not scrapable via
+      // content script), authentication wall, robots-blocked content.
+      if (!result.text || result.wordCount === 0) {
+        setStatus({
+          kind: 'error',
+          message: `The page loaded but no readable text was extracted. This usually means the site is a JS-heavy SPA that needed longer to render, or it's a PDF (use the file-upload path for PDFs), or the content sits behind a login.`,
+        })
+        return
+      }
       setStatus({ kind: 'done', result })
       onComplete(result)
     } catch (err) {

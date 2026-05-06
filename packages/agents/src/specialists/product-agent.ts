@@ -30,6 +30,15 @@ const PRODUCT_CONFIG: AgentConfig = {
     'draft_email',             // Draft stakeholder communications when findings need to be shared
     'flag_for_review',         // Flag unsubstantiated claims and assumptions
     'ask_clarification',       // ONE-TIME use: ask user a blocking question when answer materially changes analysis
+    // ─── Browser tools (Phase B) — drive Mixpanel, Miro, Google Docs, Notion, etc. ───
+    'browser_state',            // ALWAYS first when user says "this page" / "this dashboard" / "this doc"
+    'browser_visit',            // Open a tool URL (Mixpanel report, Miro board) for interaction
+    'browser_close',            // Clean up tabs after a flow completes
+    'browser_scrape',           // One-shot read of a page (e.g., docs site, Stack Overflow answer)
+    'browser_screenshot',       // Visual reasoning over rendered analytics, diagrams, mockups
+    'browser_scroll',           // Scroll long dashboards / lists to load below-fold content
+    'browser_click',            // Click filter buttons in Mixpanel, expand sections in Miro
+    'browser_fill',             // Type into Notion docs, Google Docs comments, Mixpanel queries. Never auto-submits.
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }
