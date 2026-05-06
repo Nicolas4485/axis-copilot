@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { sessions, streamMessage as streamAriaMessage, type SSEEvent, type Message, type ConflictRecord } from '@/lib/api'
+import { sessions, streamMessage as streamAriaMessage, respondToToolConfirmation, type SSEEvent, type Message, type ConflictRecord } from '@/lib/api'
 import { ConflictBanner } from '@/components/conflict-banner'
 import { VoiceInput } from '@/components/voice-input'
 import { AriaLivePanel } from '@/components/aria/aria-live-panel'
@@ -217,6 +217,21 @@ export default function SessionPage() {
   type BrowserPrompt = { id: number; reason: string; suggestedUrl: string | null; dismissed: boolean }
   const [browserPrompts, setBrowserPrompts] = useState<BrowserPrompt[]>([])
   const browserPromptIdRef = useRef(0)
+  // Tool confirmation prompts — surfaced when the cross-domain gate flags a
+  // WRITE/SENSITIVE action. Agent's tool loop is paused server-side until the
+  // user clicks Approve or Deny; the POST resolves the bridge.
+  // See apps/api/src/lib/confirmation-bridge.ts.
+  type ConfirmationCard = {
+    requestId: string
+    command: string
+    targetUrl: string
+    userMessage: string
+    gateAction: 'allow' | 'require_confirmation' | 'deny'
+    /** UI state — 'pending' before click, 'approving'/'denying' during the POST, 'done' after. */
+    state: 'pending' | 'approving' | 'denying' | 'approved' | 'denied' | 'error'
+    error?: string
+  }
+  const [confirmations, setConfirmations] = useState<ConfirmationCard[]>([])
   const [imageBase64, setImageBase64]     = useState<string | null>(null)
   const [imagePreview, setImagePreview]   = useState<string | null>(null)
   const liveMode = searchParams.get('live') === 'true'
@@ -241,7 +256,14 @@ export default function SessionPage() {
     queryKey: ['session', sessionId],
     queryFn: () => sessions.get(sessionId!),
     enabled: !!sessionId,
-    refetchInterval: 5000,
+    // Polling removed: the streamMessage 'done' SSE handler already calls
+    // refetch() when an assistant turn completes (see line ~480), so 5 s
+    // background polling was redundant AND triggered the scroll-on-array-
+    // reference re-fire that interfered with mid-message typing. Re-enable
+    // ONLY if you have a use case where the messages list needs to update
+    // from a non-streaming source (e.g. a parallel mobile session).
+    // refetchInterval: 5000,
+    refetchOnWindowFocus: false,
   })
 
   const { data: costData } = useQuery({
@@ -251,9 +273,14 @@ export default function SessionPage() {
     refetchInterval: 10_000,
   })
 
+  // Auto-scroll only when message COUNT changes or while streaming. Using
+  // session?.messages (the array reference) caused a refire on every
+  // refetchInterval tick — useQuery returns a fresh array even when content
+  // is identical, and the smooth-scroll yanked the viewport mid-typing,
+  // appearing as if the input field was "refreshing".
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [session?.messages, streamContent])
+  }, [session?.messages?.length, streamContent])
 
   // Map delegation tool names → display names used in specialist metadata
   const DELEGATE_TOOL_TO_AGENT: Record<string, string> = {
@@ -420,6 +447,21 @@ export default function SessionPage() {
             setClarifications(prev => [...prev, card])
             break
           }
+          case 'tool_confirmation': {
+            // Cross-domain gate flagged a WRITE/SENSITIVE action. Agent's
+            // tool loop is paused server-side until the user clicks Approve
+            // or Deny — that POST resolves the bridge.
+            const gate = event['gate'] as { action: 'allow' | 'require_confirmation' | 'deny' } | undefined
+            setConfirmations(prev => [...prev, {
+              requestId: event['requestId'] as string,
+              command: event['command'] as string,
+              targetUrl: (event['targetUrl'] as string) ?? '',
+              userMessage: (event['userMessage'] as string) ?? 'The agent wants to perform an action.',
+              gateAction: gate?.action ?? 'require_confirmation',
+              state: 'pending',
+            }])
+            break
+          }
           case 'browser_required': {
             // Aria detected this message needs the AXIS Chrome extension and
             // the extension isn't currently connected via WS. Surface a
@@ -461,6 +503,23 @@ export default function SessionPage() {
     abortRef.current = controller
     setInput('')
   }, [input, streaming, sessionId, mode, imageBase64, refetch, router])
+
+  const submitConfirmation = useCallback(async (requestId: string, decision: 'approve' | 'deny') => {
+    setConfirmations(prev => prev.map(c =>
+      c.requestId === requestId ? { ...c, state: decision === 'approve' ? 'approving' : 'denying' } : c,
+    ))
+    try {
+      await respondToToolConfirmation({ requestId, decision })
+      setConfirmations(prev => prev.map(c =>
+        c.requestId === requestId ? { ...c, state: decision === 'approve' ? 'approved' : 'denied' } : c,
+      ))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setConfirmations(prev => prev.map(c =>
+        c.requestId === requestId ? { ...c, state: 'error', error: message } : c,
+      ))
+    }
+  }, [])
 
   const submitClarification = useCallback(async (requestId: string, answer: string) => {
     if (!sessionId) return
@@ -804,6 +863,70 @@ export default function SessionPage() {
                   <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
                     <Loader2 size={13} className="animate-spin text-[var(--gold)]" />
                     <span>Researching and building analysis… this takes 1–2 minutes</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* Tool confirmation prompts — Approve / Deny widgets for
+                cross-domain WRITE/SENSITIVE actions flagged by the gate.
+                See apps/api/src/lib/cross-domain-gate.ts and confirmation-bridge.ts.
+                Agent's tool loop is paused server-side until the user clicks. */}
+            {confirmations.map((c) => (
+              <div key={c.requestId} className="flex items-start gap-2.5 justify-start animate-fade-up" style={{ animationDuration: '0.2s' }}>
+                <div className="w-7 h-7 rounded-full shrink-0 mt-0.5 flex items-center justify-center text-[11px] font-semibold bg-[#FFE4D4] border border-[rgba(245,124,32,0.30)] text-[#F57C20]">
+                  !
+                </div>
+                <div className="max-w-2xl w-full rounded-2xl border border-[#F57C20]/30 bg-[#F57C20]/[0.04] overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#F57C20]/15 bg-[#F57C20]/[0.04]">
+                    <AlertTriangle size={11} className="text-[#F57C20]" />
+                    <span className="text-[10px] font-mono tracking-widest uppercase text-[#F57C20]">Confirmation needed</span>
+                  </div>
+                  <div className="px-4 py-3">
+                    <div className="text-[12px] text-[var(--text-muted)] mb-1">Tool: <code className="text-[var(--chat-text)] font-mono">{c.command}</code></div>
+                    {c.targetUrl && (
+                      <div className="text-[12px] text-[var(--text-muted)] mb-2 truncate">Target: <span className="text-[var(--chat-text)]">{c.targetUrl}</span></div>
+                    )}
+                    <p className="text-[13px] text-[var(--chat-text)] mb-3 whitespace-pre-line">{c.userMessage}</p>
+                    {c.state === 'pending' && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => submitConfirmation(c.requestId, 'approve')}
+                          className="px-3 py-1.5 text-[12px] font-medium rounded-full bg-[#22A064] text-white hover:opacity-90"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => submitConfirmation(c.requestId, 'deny')}
+                          className="px-3 py-1.5 text-[12px] font-medium rounded-full border border-[var(--border)] text-[var(--text)] hover:border-[#f87171] hover:text-[#f87171]"
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    )}
+                    {(c.state === 'approving' || c.state === 'denying') && (
+                      <div className="flex items-center gap-2 text-[12px] text-[var(--text-muted)]">
+                        <Loader2 size={12} className="animate-spin" />
+                        <span>{c.state === 'approving' ? 'Approving…' : 'Denying…'}</span>
+                      </div>
+                    )}
+                    {c.state === 'approved' && (
+                      <div className="flex items-center gap-2 text-[12px] text-[#22A064]">
+                        <CheckCircle2 size={12} />
+                        <span>Approved — agent is continuing</span>
+                      </div>
+                    )}
+                    {c.state === 'denied' && (
+                      <div className="flex items-center gap-2 text-[12px] text-[#f87171]">
+                        <X size={12} />
+                        <span>Denied</span>
+                      </div>
+                    )}
+                    {c.state === 'error' && (
+                      <div className="text-[12px] text-[#f87171]">Error: {c.error ?? 'Failed to send decision.'}</div>
+                    )}
                   </div>
                 </div>
               </div>
