@@ -11,9 +11,56 @@ import { Aria } from '@axis/agents'
 import { InferenceEngine } from '@axis/inference'
 import { AriaTextAgent } from '@axis/sdk-agents'
 import { messagesRateLimit } from '../middleware/auth.js'
+import { isExtensionConnected } from '../lib/extension-ws-server.js'
 
 const engine = new InferenceEngine()
 const aria = new Aria({ engine, prisma })
+
+// ── Browser-intent heuristic ──────────────────────────────────────────────
+// The route emits `browser_required` early when this matches AND the
+// extension isn't connected, so the user sees a ResearchPrompt card before
+// the agent even starts. The TOOL-FAILURE path below catches the rest:
+// if the agent tries a browser_* tool and it fails with "extension not
+// connected", we emit browser_required from the sendEvent wrapper. Two
+// layers means the heuristic doesn't have to be perfect.
+//
+// Pattern groups, each tuned for high precision:
+//   1. Explicit verbs: scrape / browse / visit / open / read / click / fill
+//   2. Search-on-platform: "look up on linkedin", "search google for"
+//   3. Possessive references: "their pricing", "their site", "their page"
+//   4. Definite references: "the pricing page", "the website", "the listing"
+//   5. Comparison shapes: "compare X pricing", "how X prices vs"
+//   6. Site shorthand: "competitor's pricing", "competitor pricing site"
+const BROWSER_VERB_RE = new RegExp([
+  // 1. Explicit verbs
+  '\\b(scrape|browse|visit|open\\s+(?:the\\s+|up\\s+)?(?:tab|page|website|site|url|link)',
+  '|read\\s+(?:this\\s+|the\\s+)?(?:page|site|article|url|link)',
+  '|click\\s+(?:on\\s+)?(?:this|the)\\s+(?:link|button)',
+  '|fill\\s+(?:out|in)\\s+(?:this\\s+|the\\s+)?form',
+  // 2. Search-on-platform
+  '|research\\s+(?:on|in)\\s+the\\s+web',
+  '|(?:look|search)\\s+(?:up|at|for)\\s+(?:on|in)\\s+(?:the\\s+web|google|linkedin|twitter|x\\.com|reddit|youtube)',
+  '|message\\s+\\w+\\s+on\\s+linkedin',
+  // 3. Possessive references — "their pricing/site/page/website"
+  '|(?:their|its)\\s+(?:pricing|site|page|website|landing|product|features|signup)',
+  // 4. Definite references — "the pricing page" etc.
+  '|the\\s+(?:pricing|landing|signup|features?|product)\\s+(?:page|site|website|listing|details?)',
+  // 5. Comparison shapes
+  '|compare\\s+\\w+\\s+(?:to|vs|with|against)',
+  '|how\\s+(?:does|do|is)\\s+\\w+\'?s?\\s+(?:pricing|features?)\\s+(?:compare|stack)',
+  // 6. Site shorthand — "competitor pricing site", "their pricing"
+  '|(?:competitor|competitor\'s|competitors)\\s+(?:pricing|site|website|page)',
+  '|check\\s+(?:competitor|website|the\\s+pricing\\s+page))\\b',
+].join(''), 'i')
+
+const URL_RE = /\bhttps?:\/\/[^\s<>'"]+/i
+
+function detectBrowserIntent(message: string): { likely: boolean; reason: string; suggestedUrl?: string } {
+  const m = URL_RE.exec(message)
+  if (m) return { likely: true, reason: 'message contains a URL', suggestedUrl: m[0] }
+  if (BROWSER_VERB_RE.test(message)) return { likely: true, reason: 'message implies browser interaction' }
+  return { likely: false, reason: '' }
+}
 // Instantiated once; `undefined` when SDK_AGENTS_ENABLED=false so there's no startup cost.
 let _sdkAriaAgent: AriaTextAgent | undefined
 function getSdkAgent(): AriaTextAgent {
@@ -243,9 +290,69 @@ ariaRouter.post('/messages', messagesRateLimit, async (req: Request, res: Respon
   let closed = false
   req.on('close', () => { closed = true })
 
+  // Tracks whether we've already emitted a browser_required event for this
+  // request so the user doesn't see duplicate cards when the agent retries
+  // multiple browser_* tools and they all fail with the same error.
+  let browserRequiredEmittedFor: 'upfront' | 'tool_failure' | null = null
+
   const sendEvent = (type: string, data: unknown): void => {
     if (closed) return
-    res.write(`data: ${JSON.stringify({ ...(data as Record<string, unknown>), type })}\n\n`)
+    const payload = { ...(data as Record<string, unknown>), type }
+    res.write(`data: ${JSON.stringify(payload)}\n\n`)
+
+    // Track upfront emission so the tool-failure side-channel below doesn't dupe.
+    if (type === 'browser_required' && browserRequiredEmittedFor === null) {
+      browserRequiredEmittedFor = 'upfront'
+    }
+
+    // Side-channel: a browser_* tool call failed because the extension isn't
+    // connected. Surface a ResearchPrompt card in chat so the user can run
+    // the work locally with one click — same UX as the upfront heuristic
+    // above but caught from the agent's mid-task discovery instead of the
+    // user's input wording.
+    if (type === 'tool_result' && browserRequiredEmittedFor === null) {
+      const tool = String(payload['tool'] ?? '')
+      const ok = payload['success'] === true
+      if (!ok && tool.startsWith('browser_')) {
+        const err = String(payload['error'] ?? '')
+        if (/extension not connected/i.test(err)) {
+          // Extract the URL the agent was trying to hit (best-effort — shape
+          // varies by tool but most read/visit calls put the url in input).
+          const input = payload['input'] as Record<string, unknown> | undefined
+          const inputUrl = typeof input?.['url'] === 'string' ? (input['url'] as string) : null
+          const reEmit = JSON.stringify({
+            type: 'browser_required',
+            reason: `${tool} failed because the AXIS extension isn't connected.`,
+            suggestedUrl: inputUrl,
+          })
+          res.write(`data: ${reEmit}\n\n`)
+          browserRequiredEmittedFor = 'tool_failure'
+        }
+      }
+    }
+  }
+
+  // ── Browser-tool readiness ──────────────────────────────────────────────
+  // We previously fired browser_required upfront based on a regex over the
+  // user's wording. That broke the autonomy contract — Mel/Sean SHOULD do
+  // their own reasoning (perplexity, knowledge base, etc.) before deciding
+  // they need browser tools. Firing a card upfront made it look like the
+  // system was asking the user to do the agent's job.
+  //
+  // Now: agents run normally. If a browser_* tool call fails because the
+  // extension isn't connected, the sendEvent wrapper above emits
+  // browser_required at THAT point with the URL the agent was trying to
+  // hit — precise, agent-driven, no-friction-when-online.
+  //
+  // The upfront URL-only fast path (literal http:// in the user message)
+  // is kept as a small UX hint when the user is being explicit and we
+  // don't want to wait for the agent to try-and-fail before showing a card.
+  const browserIntent = detectBrowserIntent(content)
+  if (browserIntent.likely && browserIntent.suggestedUrl && !isExtensionConnected(req.userId!)) {
+    sendEvent('browser_required', {
+      reason: browserIntent.reason,
+      suggestedUrl: browserIntent.suggestedUrl,
+    })
   }
 
   // Load last 30 messages for intent classification and conversational context

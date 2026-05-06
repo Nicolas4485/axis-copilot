@@ -556,6 +556,9 @@ export const apiKeys = {
 export interface SSEEvent {
   type: 'tool_start' | 'tool_result' | 'token' | 'conflict_warning' | 'sources' | 'delegation' | 'done'
       | 'rag_search' | 'rag_done' | 'model_call' | 'ask_user'
+      | 'browser_required'   // Aria signals the user's request needs the AXIS
+                             // extension and it's currently disconnected.
+                             // Payload: { reason: string, suggestedUrl: string | null }
   [key: string]: unknown
 }
 

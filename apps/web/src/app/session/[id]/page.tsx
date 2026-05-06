@@ -8,6 +8,7 @@ import { ConflictBanner } from '@/components/conflict-banner'
 import { VoiceInput } from '@/components/voice-input'
 import { AriaLivePanel } from '@/components/aria/aria-live-panel'
 import { MarkdownMessage } from '@/components/markdown-message'
+import { ResearchPrompt } from '@/components/research-prompt'
 import {
   Send, Upload, ChevronDown, ChevronRight, DollarSign,
   Wrench, FileText, AlertTriangle, Image as ImageIcon, X,
@@ -210,6 +211,12 @@ export default function SessionPage() {
   const [showSources, setShowSources]     = useState(false)
   type ClarificationCard = { requestId: string; question: string; context: string; options?: string[]; answered: boolean; answer?: string }
   const [clarifications, setClarifications] = useState<ClarificationCard[]>([])
+  // Browser-required prompts surfaced when Aria detects the user's message
+  // implies browser work but the AXIS extension isn't connected.
+  // See apps/api/src/routes/aria.ts → detectBrowserIntent + browser_required SSE event.
+  type BrowserPrompt = { id: number; reason: string; suggestedUrl: string | null; dismissed: boolean }
+  const [browserPrompts, setBrowserPrompts] = useState<BrowserPrompt[]>([])
+  const browserPromptIdRef = useRef(0)
   const [imageBase64, setImageBase64]     = useState<string | null>(null)
   const [imagePreview, setImagePreview]   = useState<string | null>(null)
   const liveMode = searchParams.get('live') === 'true'
@@ -411,6 +418,19 @@ export default function SessionPage() {
               answered:  false,
             }
             setClarifications(prev => [...prev, card])
+            break
+          }
+          case 'browser_required': {
+            // Aria detected this message needs the AXIS Chrome extension and
+            // the extension isn't currently connected via WS. Surface a
+            // chat-inline ResearchPrompt so the user can drive the browser
+            // locally with one click.
+            setBrowserPrompts(prev => [...prev, {
+              id: ++browserPromptIdRef.current,
+              reason: event['reason'] as string ?? 'Aria needs browser access for this request.',
+              suggestedUrl: (event['suggestedUrl'] as string | null) ?? null,
+              dismissed: false,
+            }])
             break
           }
           case 'token':
@@ -785,6 +805,36 @@ export default function SessionPage() {
                     <Loader2 size={13} className="animate-spin text-[var(--gold)]" />
                     <span>Researching and building analysis… this takes 1–2 minutes</span>
                   </div>
+                </div>
+              </div>
+            ))}
+
+            {/* Browser-required prompts — surfaced when Aria detects the user's
+                request implies browser work but the AXIS extension isn't connected.
+                See apps/api/src/routes/aria.ts → detectBrowserIntent + the
+                browser_required SSE event. */}
+            {browserPrompts.filter(p => !p.dismissed).map((p) => (
+              <div key={p.id} className="flex items-start gap-2.5 justify-start animate-fade-up" style={{ animationDuration: '0.2s' }}>
+                <div className="w-7 h-7 rounded-full shrink-0 mt-0.5 flex items-center justify-center text-[11px] font-semibold bg-[#D4EDE3] border border-[rgba(34,160,100,0.30)] text-[#22A064]">
+                  A
+                </div>
+                <div className="max-w-2xl w-full">
+                  <ResearchPrompt
+                    {...(p.suggestedUrl !== null ? { url: p.suggestedUrl } : {})}
+                    onComplete={(result) => {
+                      // Inject the scraped result back into the chat as if the user
+                      // had pasted it. Aria will use it on the next message.
+                      const summary = `Scraped "${result.title}" (${result.wordCount} words) from ${result.url}.\n\n${result.text.slice(0, 4000)}${result.text.length > 4000 ? '…' : ''}`
+                      // Mark this prompt as resolved so it disappears.
+                      setBrowserPrompts(prev => prev.map(x => x.id === p.id ? { ...x, dismissed: true } : x))
+                      // Push into the input so the user can hit send to share with Aria.
+                      setInput((current) => current
+                        ? `${current}\n\n[browser research result]\n${summary}`
+                        : `[browser research result]\n${summary}`,
+                      )
+                    }}
+                    onDismiss={() => setBrowserPrompts(prev => prev.map(x => x.id === p.id ? { ...x, dismissed: true } : x))}
+                  />
                 </div>
               </div>
             ))}
