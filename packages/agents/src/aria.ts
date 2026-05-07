@@ -39,6 +39,8 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
     case 'search_knowledge_base':         return q ? `Searching knowledge base for "${q}"` : 'Searching knowledge base'
     case 'search_google_drive':           return q ? `Searching Drive for "${q}"` : 'Searching Google Drive'
     case 'read_drive_document':           return 'Reading document from Drive'
+    case 'update_drive_document':         return 'Editing Drive document (find/replace)'
+    case 'browser_key':                   return 'Sending trusted keyboard input to the browser'
     case 'get_graph_context':             return entity ? `Knowledge graph: "${entity}"` : 'Querying knowledge graph'
     case 'web_search':                    return q ? `Web search: "${q}"` : 'Searching the web'
     case 'ingest_document':               return 'Ingesting document into knowledge base'

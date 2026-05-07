@@ -35,7 +35,8 @@ export const ARIA_PERSONALITY = `You are Aria, the lead consultant and AI partne
    - **Drive content (Google Docs/Sheets/PDFs in his Drive)** → use search_google_drive + read_drive_document. Faster, cleaner, works around Google Docs's SVG renderer.
    - **Arbitrary web pages** (LinkedIn, competitor sites, news, blogs, GitHub) → use browser_visit/browser_scrape via the extension.
    - **Currently open page that Nicolas is referring to** → call browser_state first, then route based on the URL above.
-   - **Editing a Google Doc** → READING works via read_drive_document. WRITING from the agent is NOT yet supported (Google Docs's editor defeats DOM-based writes; Drive write API is the right path but not yet wired). Be honest about this — give Nicolas the rewritten text to paste, do not pretend you can apply edits in-place. NEVER claim "I can't access the extension" — you can; the limitation is specifically writing to Docs, not browser tools in general.
+   - **Editing a Google Doc** → use update_drive_document. Atomic find-and-replace via the official Docs API — fast, no Chrome banner, returns the count of replacements made. Always read the doc first via read_drive_document so you know the EXACT findText that exists. Never invent findText from memory; the doc may have changed. Empty replaceText deletes findText. browser_fill on a docs.google.com URL works as a fallback (auto-routes through chrome.debugger), but update_drive_document is the right default for Drive content.
+   - **Trusted keyboard input** → use browser_key when a site filters synthetic events (Google Docs Kix surface, certain LinkedIn flows). Pass hotkey "Ctrl+H" for chords, or key "Enter" with optional modifier flags. Triggers the yellow Chrome debugger banner briefly; auto-detaches on idle.
 
 ## How you behave
 - You are direct, insightful, and decisive. You speak like a trusted senior colleague, not a customer service bot.
@@ -433,6 +434,20 @@ Do NOT just say "noted" — always call this tool so the correction persists.`,
     },
   },
   {
+    name: 'update_drive_document',
+    description: 'Find-and-replace text in an existing Google Doc via the official Docs API. Atomic, fast, no Chrome banner — PREFER THIS over browser_fill on Drive-hosted Docs. ALWAYS call read_drive_document first to confirm the exact findText exists; do not invent findText from memory. Returns replacementsMade — 0 means findText was not present (no-op, not an error). Pass empty replaceText to delete findText.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        documentId: { type: 'string', description: 'Google Docs file ID (same value as fileId from search_google_drive).' },
+        findText: { type: 'string', description: 'Exact text to find. Must be non-empty.' },
+        replaceText: { type: 'string', description: 'Replacement text. Use "" to delete findText.' },
+        matchCase: { type: 'boolean', description: 'Case-sensitive match (default true).' },
+      },
+      required: ['documentId', 'findText', 'replaceText'],
+    },
+  },
+  {
     name: 'ingest_document',
     description:
       'Download and index a Google Drive document into the knowledge base. IMPORTANT: This is the ONLY tool that works for Google Slides (.pptx) files — it uses the Google Slides API internally. Always use this for Google Slides. Also use when the user asks to ingest, index, or save any Drive document. Content is searchable immediately when this returns. Use forceReprocess: true when the source document has been corrected and needs to be re-indexed.',
@@ -613,6 +628,25 @@ Do NOT just say "noted" — always call this tool so the correction persists.`,
         tabId: { type: 'number', description: 'tabId from browser_visit. Defaults to active tab.' },
         selector: { type: 'string', description: 'Optional CSS selector to crop to one element.' },
       },
+    },
+  },
+  {
+    name: 'browser_key',
+    description: 'Dispatch a TRUSTED keyboard event via chrome.debugger. Use this only when synthetic events are filtered (Google Docs Kix surface, certain LinkedIn flows). Pass either `hotkey` (e.g. "Ctrl+H", "Ctrl+Enter") OR `key` (e.g. "Enter", "Tab", "Escape") with optional modifier flags. For Drive-hosted Doc edits prefer update_drive_document — it is faster and shows no Chrome banner. Triggers a brief yellow Chrome banner; auto-detaches on idle.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: 'tabId from browser_visit. Agent must own the tab unless allowHumanTabs is true.' },
+        hotkey: { type: 'string', description: 'Combo string like "Ctrl+H" or "Ctrl+Shift+P". Mutually exclusive with `key`.' },
+        key: { type: 'string', description: 'Single key name or printable character. Mutually exclusive with `hotkey`.' },
+        ctrl:  { type: 'boolean', description: 'Hold Control while pressing `key`.' },
+        alt:   { type: 'boolean', description: 'Hold Alt while pressing `key`.' },
+        shift: { type: 'boolean', description: 'Hold Shift while pressing `key`.' },
+        meta:  { type: 'boolean', description: 'Hold Meta/Cmd/Win while pressing `key`.' },
+        repeat: { type: 'number', description: 'Repeat the press N times (1-50, default 1).' },
+        allowHumanTabs: { type: 'boolean', description: 'Allow targeting a tab the user opened. Default false.' },
+      },
+      required: ['tabId'],
     },
   },
 ]

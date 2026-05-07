@@ -39,6 +39,11 @@ const PRODUCT_CONFIG: AgentConfig = {
     'browser_scroll',           // Scroll long dashboards / lists to load below-fold content
     'browser_click',            // Click filter buttons in Mixpanel, expand sections in Miro
     'browser_fill',             // Type into Notion docs, Google Docs comments, Mixpanel queries. Never auto-submits.
+    'browser_key',              // Trusted keyboard input via chrome.debugger — Tab/Enter on Mixpanel queries, hotkeys on Notion (Ctrl+/), keyboard nav on Miro.
+    // ─── Drive API editing (Option 3 — preferred over browser_fill on Docs) ───
+    'search_google_drive',      // Find a product spec or PRD by name before editing it.
+    'read_drive_document',      // Read the current spec to know what to find/replace.
+    'update_drive_document',    // PREFER THIS over browser_fill on Drive-hosted Docs. Atomic find-and-replace via the official API. No Chrome banner. Returns replacement count.
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }

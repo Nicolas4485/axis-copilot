@@ -35,6 +35,7 @@ const COMPETITIVE_CONFIG: AgentConfig = {
     'browser_scroll',           // Scroll infinite feeds (LinkedIn search results, news listings)
     'browser_click',            // Click links/buttons. Cross-domain gated.
     'browser_fill',             // Type into search boxes, message composers. NEVER auto-submits forms.
+    'browser_key',              // Trusted keyboard input via chrome.debugger — Tab/Enter/Esc on LinkedIn dropdowns, hotkeys on sites that filter synthetic events.
   ],
   memoryTypes: ['EPISODIC', 'SEMANTIC', 'PROCEDURAL'], // PROCEDURAL: learns from analyst corrections (3C.3)
 }
