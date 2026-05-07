@@ -84,10 +84,9 @@ export async function judgeFaithfulness(
   userId: string,
 ): Promise<number> {
   if (!answer || answer.length < 5) return 0
-  // Correct refusal when context is empty
-  if (answer.toUpperCase().includes('NOT FOUND') && context.length < 50) return 1.0
-  // Wrong refusal when context has content
-  if (answer.toUpperCase().includes('NOT FOUND') && context.length > 100) return 0.2
+  // Correct refusal: context is structurally empty (just the ---KNOWLEDGE CONTEXT--- header, no real chunks)
+  const contextHasContent = context.replace(/---[\w\s]+---/g, '').trim().length > 20
+  if (answer.toUpperCase().includes('NOT FOUND') && !contextHasContent) return 1.0
 
   try {
     const resp = await engine.route(TASK, {

@@ -153,7 +153,7 @@ export class RagEvaluator {
 
       // Step 2: generate answer from context
       const answerResponse = await this.engine.route('agent_response', {
-        systemPromptKey: 'RAG_REFLECT',
+        systemPromptKey: 'AGENT_BASE',
         messages: [{
           role: 'user',
           content: `Question: ${q.question}\n\nContext:\n${context}\n\nAnswer the question using ONLY the provided context. If the answer is not in the context, say "NOT FOUND".`,
