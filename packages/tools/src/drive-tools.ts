@@ -5,6 +5,7 @@ import type { ToolContext, ToolResult, ToolDefinition } from './types.js'
 import { PrismaClient } from '@prisma/client'
 import { getValidToken } from './google/auth.js'
 import { listFiles, getFileMetadata, downloadFileAuto } from './google/drive.js'
+import { replaceAllText } from './google/docs.js'
 
 let _prisma: PrismaClient | null = null
 function getPrisma(): PrismaClient {
@@ -150,6 +151,74 @@ export async function readDriveDocument(
       success: false,
       data: null,
       error: err instanceof Error ? err.message : 'Failed to read Drive document',
+      durationMs: Date.now() - start,
+    }
+  }
+}
+
+// ─── update_drive_document ────────────────────────────────────────────────────
+
+export const updateDriveDocumentDefinition: ToolDefinition = {
+  name: 'update_drive_document',
+  description:
+    'Find-and-replace text in an existing Google Doc via the official Docs API. Atomic, fast, no Chrome banner. PREFER THIS over browser_fill for Drive-hosted Docs — Kix filters synthetic events. Returns the count of replacements made; 0 means findText was not present (no-op). The replace is permanent. Call read_drive_document first to confirm the doc state if you need to verify before editing.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      documentId: { type: 'string', description: 'Google Docs file ID. From search_google_drive.' },
+      findText: { type: 'string', description: 'Exact text to find. Must be non-empty.' },
+      replaceText: { type: 'string', description: 'Replacement text. Pass an empty string to delete findText.' },
+      matchCase: { type: 'boolean', description: 'Case-sensitive match (default true).' },
+    },
+    required: ['documentId', 'findText', 'replaceText'],
+  },
+}
+
+export async function updateDriveDocument(
+  input: Record<string, unknown>,
+  context: ToolContext
+): Promise<ToolResult> {
+  const start = Date.now()
+  const documentId = input['documentId']
+  const findText = input['findText']
+  const replaceText = input['replaceText']
+  const matchCase = input['matchCase']
+
+  if (typeof documentId !== 'string' || !documentId.trim()) {
+    return { success: false, data: null, error: 'documentId is required (Google Docs file ID)', durationMs: Date.now() - start }
+  }
+  if (typeof findText !== 'string' || findText.length === 0) {
+    return { success: false, data: null, error: 'findText is required and must be a non-empty string', durationMs: Date.now() - start }
+  }
+  if (typeof replaceText !== 'string') {
+    return { success: false, data: null, error: 'replaceText is required (use "" to delete findText)', durationMs: Date.now() - start }
+  }
+
+  try {
+    const token = await getDriveToken(context.userId)
+    const result = await replaceAllText(
+      token,
+      documentId.trim(),
+      findText,
+      replaceText,
+      typeof matchCase === 'boolean' ? matchCase : true,
+    )
+    return {
+      success: true,
+      data: {
+        documentId: result.documentId,
+        replacementsMade: result.replacementsMade,
+        findText,
+        replaceText,
+        matchCase: typeof matchCase === 'boolean' ? matchCase : true,
+      },
+      durationMs: Date.now() - start,
+    }
+  } catch (err) {
+    return {
+      success: false,
+      data: null,
+      error: err instanceof Error ? err.message : 'Failed to update Drive document',
       durationMs: Date.now() - start,
     }
   }

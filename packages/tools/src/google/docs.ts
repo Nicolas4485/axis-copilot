@@ -89,6 +89,62 @@ export async function appendSection(
 }
 
 /**
+ * Find-and-replace text in an existing Google Doc via the official Docs API.
+ * Atomic and idempotent: returns `replacementsMade: 0` when `findText` is
+ * absent, so callers can detect the no-op cleanly.
+ *
+ * Use this in preference to driving the Kix editor through the browser
+ * extension — Kix filters synthetic events and the official API is faster,
+ * more reliable, and produces no Chrome debugger banner.
+ *
+ * Requires the `https://www.googleapis.com/auth/documents` OAuth scope
+ * (already requested by `auth.ts`).
+ */
+export async function replaceAllText(
+  accessToken: string,
+  documentId: string,
+  findText: string,
+  replaceText: string,
+  matchCase = true,
+): Promise<{ replacementsMade: number; documentId: string; revisionId?: string }> {
+  if (!findText) {
+    throw new Error('replaceAllText: findText must be a non-empty string.')
+  }
+
+  const response = await fetch(`${DOCS_API}/documents/${documentId}:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      requests: [{
+        replaceAllText: {
+          containsText: { text: findText, matchCase },
+          replaceText,
+        },
+      }],
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Docs replaceAllText failed: ${response.status} ${await response.text()}`)
+  }
+
+  const data = await response.json() as {
+    documentId: string
+    writeControl?: { requiredRevisionId?: string }
+    replies?: Array<{ replaceAllText?: { occurrencesChanged?: number } }>
+  }
+
+  return {
+    documentId: data.documentId,
+    replacementsMade: data.replies?.[0]?.replaceAllText?.occurrencesChanged ?? 0,
+    ...(data.writeControl?.requiredRevisionId !== undefined && { revisionId: data.writeControl.requiredRevisionId }),
+  }
+}
+
+/**
  * Insert text at the end of a document.
  */
 export async function appendText(

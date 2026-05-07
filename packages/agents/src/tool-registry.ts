@@ -38,6 +38,7 @@ import {
   readEmail, readEmailDefinition,
   searchGoogleDrive, searchGoogleDriveDefinition,
   readDriveDocument, readDriveDocumentDefinition,
+  updateDriveDocument, updateDriveDocumentDefinition,
   bookMeeting, bookMeetingDefinition,
   createTask, createTaskDefinition,
   listDeals, listDealsDefinition,
@@ -107,6 +108,7 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   read_email: { definition: readEmailDefinition, execute: readEmail },
   search_google_drive: { definition: searchGoogleDriveDefinition, execute: searchGoogleDrive },
   read_drive_document: { definition: readDriveDocumentDefinition, execute: readDriveDocument },
+  update_drive_document: { definition: updateDriveDocumentDefinition, execute: updateDriveDocument },
   book_meeting: { definition: bookMeetingDefinition, execute: bookMeeting },
   create_task: { definition: createTaskDefinition, execute: createTask },
   // PE Deal pipeline tools
