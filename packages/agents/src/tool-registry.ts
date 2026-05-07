@@ -56,6 +56,7 @@ import {
   browserClick, browserClickDefinition,
   browserFill, browserFillDefinition,
   browserScroll, browserScrollDefinition,
+  browserKey, browserKeyDefinition,
 } from './tools/browser-tools.js'
 // PE tools that need CimAnalyst/MemoWriter live here to avoid circular deps
 import {
@@ -125,6 +126,7 @@ const TOOL_MAP: Record<string, ToolEntry> = {
   browser_click:      { definition: browserClickDefinition,      execute: browserClick },
   browser_fill:       { definition: browserFillDefinition,       execute: browserFill },
   browser_scroll:     { definition: browserScrollDefinition,     execute: browserScroll },
+  browser_key:        { definition: browserKeyDefinition,        execute: browserKey },
 }
 
 export class ToolRegistry {

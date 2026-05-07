@@ -313,6 +313,59 @@ export async function browserFill(input: Record<string, unknown>, ctx: ToolConte
   return rpcResultToToolResult(r, Date.now() - start)
 }
 
+// ─── Tool: browser_key ────────────────────────────────────────────────────
+// WRITE. Dispatch a TRUSTED keyboard event via chrome.debugger (CDP). Use this
+// when synthetic key events are rejected by the page — Google Docs's Kix
+// editor is the canonical case (filters event.isTrusted === false). Most
+// sites accept browser_fill and don't need this; reach for browser_key when
+// an Enter/Tab/Escape needs to actually submit/blur, or when a hotkey
+// (Ctrl+S to save, Ctrl+H to find-replace) needs to fire on a Workspace doc.
+//
+// Triggers the Chrome "AXIS Copilot started debugging this browser" yellow
+// banner while attached; the extension auto-detaches after 60 s idle and
+// immediately on plan cancel / tab close.
+
+export const browserKeyDefinition: ToolDefinition = {
+  name: 'browser_key',
+  description:
+    'Dispatch a trusted keyboard event to a tab via chrome.debugger. Use this when the page filters synthetic events (Google Docs/Sheets/Slides via the Kix editor are the main case). Pass either `hotkey` (a chord like "Ctrl+H", "Ctrl+Shift+P", "Cmd+Enter") OR `key` plus optional modifier flags. Common keys: Enter, Tab, Escape, Backspace, Delete, ArrowDown, ArrowUp, Home, End. Cross-domain WRITE — gated. Triggers a yellow Chrome debugger banner; the extension detaches automatically after the action.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      tabId: { type: 'number', description: 'tabId from browser_visit. The agent must own the tab unless allowHumanTabs is true.' },
+      hotkey: { type: 'string', description: 'Combo string like "Ctrl+H" or "Ctrl+Shift+P". Mutually exclusive with `key`.' },
+      key: { type: 'string', description: 'A single key name or printable character. Mutually exclusive with `hotkey`.' },
+      ctrl:  { type: 'boolean', description: 'Hold Control while pressing `key` (ignored when using `hotkey`).' },
+      alt:   { type: 'boolean', description: 'Hold Alt while pressing `key`.' },
+      shift: { type: 'boolean', description: 'Hold Shift while pressing `key`.' },
+      meta:  { type: 'boolean', description: 'Hold Meta/Cmd/Win while pressing `key`.' },
+      repeat: { type: 'number', description: 'Repeat the press N times (1-50, default 1). Useful for ArrowDown to scroll a list.' },
+      allowHumanTabs: { type: 'boolean', description: 'Allow targeting a tab the user opened. Default false — agent-owned tabs only.' },
+    },
+    required: ['tabId'],
+  },
+}
+
+export async function browserKey(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const start = Date.now()
+  const tabId = input['tabId']
+  if (typeof tabId !== 'number') {
+    return { success: false, data: null, error: 'tabId is required and must be a number', durationMs: Date.now() - start }
+  }
+  const hotkey = input['hotkey']
+  const key = input['key']
+  if (typeof hotkey !== 'string' && typeof key !== 'string') {
+    return { success: false, data: null, error: 'Provide either `hotkey` (e.g. "Ctrl+H") or `key` (e.g. "Enter")', durationMs: Date.now() - start }
+  }
+  if (typeof hotkey === 'string' && typeof key === 'string') {
+    return { success: false, data: null, error: '`hotkey` and `key` are mutually exclusive — pick one', durationMs: Date.now() - start }
+  }
+  const r = await dispatch({
+    userId: ctx.userId, sessionId: ctx.sessionId, command: 'KEY_PRESS', payload: input,
+  })
+  return rpcResultToToolResult(r, Date.now() - start)
+}
+
 // ─── Tool: browser_scroll ─────────────────────────────────────────────────
 // WRITE. Scroll for infinite-feed content (LinkedIn feed, Twitter timeline).
 

@@ -43,6 +43,7 @@ const CAPABILITY_BY_COMMAND: Record<string, CapabilityClass> = {
   CLICK_ELEMENT:     'WRITE',
   FILL_INPUT:        'WRITE',
   SCROLL:            'WRITE',
+  KEY_PRESS:         'WRITE',
   // Sensitive — irreversible or with potential downstream impact.
   // (Phase B+1: split CLICK_ELEMENT into CLICK + CLICK_SUBMIT and put SUBMIT here.)
   CANCEL_AGENT_PLAN: 'WRITE',
@@ -76,7 +77,7 @@ export interface BrowserRpcCall {
   userId: string
   /** Optional logical session id — groups provenance and audit entries. */
   sessionId?: string
-  /** Browser command name (one of the 11 declared in the extension protocol). */
+  /** Browser command name (one of the 12 declared in the extension protocol). */
   command: string
   /** Command-specific payload. Validated on the extension side, not here. */
   payload?: Record<string, unknown>
