@@ -25,7 +25,7 @@
     "STREAM_ERROR": "STREAM_ERROR"
   },
   "BrowserAgentMSG": {
-    "_comment": "Phase 2 (reserved) — implement in axis-bridge.js per the Phase 2 spec, then promote handlers here.",
+    "_comment": "Phase 2 — implemented. KEY_PRESS uses chrome.debugger (Option 3) for trusted keyboard input.",
     "OPEN_TAB": "OPEN_TAB",
     "CLOSE_TAB": "CLOSE_TAB",
     "GET_BROWSER_STATE": "GET_BROWSER_STATE",
@@ -35,6 +35,7 @@
     "CLICK_ELEMENT": "CLICK_ELEMENT",
     "FILL_INPUT": "FILL_INPUT",
     "SCROLL": "SCROLL",
+    "KEY_PRESS": "KEY_PRESS",
     "WAIT_FOR": "WAIT_FOR",
     "CANCEL_AGENT_PLAN": "CANCEL_AGENT_PLAN"
   }

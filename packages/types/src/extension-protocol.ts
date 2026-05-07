@@ -70,10 +70,12 @@ export const BrowserAgentMSG = {
   READ_PAGE: 'READ_PAGE',
   FIND_ELEMENT: 'FIND_ELEMENT',
   SCREENSHOT: 'SCREENSHOT',
-  // Interaction
+  // Interaction (synthetic events by default; pass useDebugger:true for trusted input)
   CLICK_ELEMENT: 'CLICK_ELEMENT',
   FILL_INPUT: 'FILL_INPUT',
   SCROLL: 'SCROLL',
+  // Trusted keyboard input via chrome.debugger (Option 3 — yellow Chrome banner shows while attached)
+  KEY_PRESS: 'KEY_PRESS',
   // Synchronisation
   WAIT_FOR: 'WAIT_FOR',
   // Control
